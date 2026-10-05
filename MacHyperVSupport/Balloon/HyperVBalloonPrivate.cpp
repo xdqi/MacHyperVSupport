@@ -146,7 +146,7 @@ IOReturn HyperVBalloon::sendStatusReport(void*, void*, void*) {
   message.statusReport.availablePages = freePages > kHyperVDynamicMemoryReservedPageCount ? freePages - kHyperVDynamicMemoryReservedPageCount : 0;
   message.statusReport.committedPages = committedPages;
 
-  HVDBGLOG("Posting memory status report: available %llu, committed %llu", message.statusReport.availablePages, message.statusReport.committedPages);
+  HVDATADBGLOG("Posting memory status report: available %llu, committed %llu", message.statusReport.availablePages, message.statusReport.committedPages);
 
   // schedule next run
   _timerSource->setTimeoutMS(kHyperVDynamicMemoryStatusReportIntervalMilliseconds);
@@ -261,7 +261,7 @@ UInt32 HyperVBalloon::inflateBalloon(UInt32 pageCount, bool morePages) {
 
     IOByteCount physicalSegmentSize;
     addr64_t physicalSegmentStart = chunk->getPhysicalSegment(0, &physicalSegmentSize, 0);
-    HVDBGLOG("Allocated page: desc %p, raw 0x%llX, size %llu", chunk, (UInt64) physicalSegmentStart, (UInt64) physicalSegmentSize);
+    HVDATADBGLOG("Allocated page: desc %p, raw 0x%llX, size %llu", chunk, (UInt64) physicalSegmentStart, (UInt64) physicalSegmentSize);
 
     // save (PFN, MemoryDescriptor) into map for further query
     const OSSymbol *key = pageFrameNumberToString(physicalSegmentStart >> PAGE_SHIFT);
@@ -343,7 +343,7 @@ void HyperVBalloon::handleBalloonDeflationRequest(HyperVDynamicMemoryMessageBall
       if (chunk) {
         chunk->complete();
         _pageFrameNumberToMemoryDescriptorMap->removeObject(key);
-        HVDBGLOG("Memory block %llu released", request->ranges[i].startPageFrameNumber + j);
+        HVDATADBGLOG("Memory block %llu released", request->ranges[i].startPageFrameNumber + j);
       } else {
         HVSYSLOG("Memory block %llu not found", request->ranges[i].startPageFrameNumber + j);
       }
