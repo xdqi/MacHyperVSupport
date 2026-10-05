@@ -126,7 +126,15 @@ void HyperVBalloon::stop(IOService *provider) {
     IOFree(_balloonInflationSendBuffer, kHyperVDynamicMemoryResponsePacketSize);
     _balloonInflationSendBuffer = nullptr;
   }
-  
+
+  //
+  // Pages still ballooned out are not backed by the host, freeing them would hand
+  // unbacked memory back to the kernel. Leak them instead, like Linux does.
+  //
+  if (_pageFrameNumberToMemoryDescriptorMap != nullptr && _pageFrameNumberToMemoryDescriptorMap->getCount() != 0) {
+    HVSYSLOG("Leaking %u ballooned pages", _pageFrameNumberToMemoryDescriptorMap->getCount());
+    _pageFrameNumberToMemoryDescriptorMap = nullptr;
+  }
   OSSafeReleaseNULL(_pageFrameNumberToMemoryDescriptorMap);
 
   super::stop(provider);
