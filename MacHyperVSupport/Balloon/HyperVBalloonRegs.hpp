@@ -19,6 +19,9 @@
 // Messages sent to the host must fit in a single Hyper-V page
 #define kHyperVDynamicMemoryMaxMessageSize                  4096
 
+// Initial number of ballooned chunks that can be tracked, grows as needed
+#define kHyperVDynamicMemoryInitialChunkCapacity            1024
+
 //
 // Dynamic memory protocol versions (major in high word, minor in low word).
 // Current dynamic memory protocol is 2.0 (Windows 10).

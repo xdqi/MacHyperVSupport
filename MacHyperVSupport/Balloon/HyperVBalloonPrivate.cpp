@@ -222,21 +222,91 @@ void HyperVBalloon::handleInformationMessage(HyperVDynamicMemoryMessageInformati
   }
 }
 
-const OSSymbol* HyperVBalloon::pageFrameNumberToString(UInt64 pfn) {
-  unsigned char buffer[7] = {0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x0};
-  // 40-bit PFN encodes into null-terminated string in which every char has 7 effective bits (highest bit masked with 1)
-  buffer[0] |= pfn & 0x7F;
-  buffer[1] |= (pfn >> 7) & 0x7F;
-  buffer[2] |= (pfn >> 14) & 0x7F;
-  buffer[3] |= (pfn >> 21) & 0x7F;
-  buffer[4] |= (pfn >> 28) & 0x7F;
-  buffer[5] |= (pfn >> 35) & 0x7F;
-  buffer[6] = 0;
-  return OSSymbol::withCString((const char *) buffer);
+HyperVBalloonChunk *HyperVBalloon::allocateChunk() {
+  // alloc memory in kernel page by page
+  IOBufferMemoryDescriptor *memoryDescriptor = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, kIOMemoryMapperNone, PAGE_SIZE, PAGE_SIZE);
+  if (memoryDescriptor == nullptr) {
+    return nullptr;
+  }
+
+  HyperVBalloonChunk *chunk = static_cast<HyperVBalloonChunk *>(IOMalloc(sizeof(*chunk)));
+  if (chunk == nullptr) {
+    memoryDescriptor->release();
+    return nullptr;
+  }
+
+  IOByteCount physicalSegmentSize;
+  addr64_t physicalSegmentStart = memoryDescriptor->getPhysicalSegment(0, &physicalSegmentSize, 0);
+  HVDATADBGLOG("Allocated page: desc %p, raw 0x%llX, size %llu", memoryDescriptor, (UInt64) physicalSegmentStart, (UInt64) physicalSegmentSize);
+
+  chunk->basePageFrameNumber = physicalSegmentStart >> PAGE_SHIFT;
+  chunk->pageCount           = 1;
+  chunk->returnedPageCount   = 0;
+  chunk->memoryDescriptor    = memoryDescriptor;
+  return chunk;
 }
 
-UInt32 HyperVBalloon::inflateBalloon(UInt32 pageCount, bool morePages) {
-  HVDBGLOG("This time inflate %u pages and%s more", pageCount, morePages ? "" : " no");
+void HyperVBalloon::freeChunk(HyperVBalloonChunk *chunk) {
+  chunk->memoryDescriptor->release();
+  IOFree(chunk, sizeof(*chunk));
+}
+
+bool HyperVBalloon::findChunk(UInt64 pageFrameNumber, UInt32 *index) {
+  //
+  // Find the first chunk starting after the page frame number,
+  // only the chunk before it can contain the page frame number.
+  //
+  UInt32 low  = 0;
+  UInt32 high = _chunkCount;
+  while (low < high) {
+    UInt32 middle = low + (high - low) / 2;
+    if (_chunks[middle]->basePageFrameNumber <= pageFrameNumber) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+
+  *index = low;
+  if (low > 0 && pageFrameNumber < _chunks[low - 1]->basePageFrameNumber + _chunks[low - 1]->pageCount) {
+    *index = low - 1;
+    return true;
+  }
+  return false;
+}
+
+bool HyperVBalloon::insertChunk(HyperVBalloonChunk *chunk) {
+  UInt32 index;
+  if (findChunk(chunk->basePageFrameNumber, &index)) {
+    HVSYSLOG("Memory block %llu is already ballooned", chunk->basePageFrameNumber);
+    return false;
+  }
+
+  if (_chunkCount == _chunkCapacity) {
+    UInt32 newCapacity = _chunkCapacity * 2;
+    HyperVBalloonChunk **newChunks = static_cast<HyperVBalloonChunk **>(IOMalloc(sizeof(*newChunks) * newCapacity));
+    if (newChunks == nullptr) {
+      return false;
+    }
+    memcpy(newChunks, _chunks, sizeof(*_chunks) * _chunkCount);
+    IOFree(_chunks, sizeof(*_chunks) * _chunkCapacity);
+    _chunks        = newChunks;
+    _chunkCapacity = newCapacity;
+  }
+
+  memmove(&_chunks[index + 1], &_chunks[index], sizeof(*_chunks) * (_chunkCount - index));
+  _chunks[index] = chunk;
+  ++_chunkCount;
+  return true;
+}
+
+void HyperVBalloon::removeChunk(UInt32 index) {
+  memmove(&_chunks[index], &_chunks[index + 1], sizeof(*_chunks) * (_chunkCount - index - 1));
+  --_chunkCount;
+}
+
+bool HyperVBalloon::inflateBalloon(UInt32 *pageCount) {
+  HVDBGLOG("This time inflate up to %u pages", *pageCount);
 
   HyperVDynamicMemoryMessage *response = reinterpret_cast<HyperVDynamicMemoryMessage *>(_balloonInflationSendBuffer);
   memset(response, 0, kHyperVDynamicMemoryResponsePacketSize);
@@ -246,43 +316,39 @@ UInt32 HyperVBalloon::inflateBalloon(UInt32 pageCount, bool morePages) {
 
   // reset to 0 per every request
   response->inflationResponse.rangeCount = 0;
-  response->inflationResponse.morePages = morePages;
 
-  // We have to do one page per allocation
-  // Hyper-V hypervisor will pass arbitrary fragmented memory block to guest which macOS guest need to release
-  // while macOS doesn't support releasing part of a memory descriptor or splitting physical memory segment to indepedently relaseable parts
-  for (UInt32 i = 0; i < pageCount; ++i) {
-    // alloc memory in kernel page by page
-    IOBufferMemoryDescriptor* chunk = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, kIOMemoryMapperNone, PAGE_SIZE, PAGE_SIZE);
+  //
+  // Each ballooned chunk is reported as its own page range.
+  // The host may return arbitrary parts of a chunk, it is freed once all of its pages are returned.
+  //
+  UInt32 balloonedPageCount = 0;
+  bool   allocationFailed   = false;
+  while (balloonedPageCount < *pageCount && response->inflationResponse.rangeCount < kHyperVDynamicMemoryInflationMaxRangeCount) {
+    HyperVBalloonChunk *chunk = allocateChunk();
     if (chunk == nullptr) {
       HVSYSLOG("Failed to allocate balloon page");
+      allocationFailed = true;
       break;
     }
-
-    IOByteCount physicalSegmentSize;
-    addr64_t physicalSegmentStart = chunk->getPhysicalSegment(0, &physicalSegmentSize, 0);
-    HVDATADBGLOG("Allocated page: desc %p, raw 0x%llX, size %llu", chunk, (UInt64) physicalSegmentStart, (UInt64) physicalSegmentSize);
-
-    // save (PFN, MemoryDescriptor) into map for further query
-    const OSSymbol *key = pageFrameNumberToString(physicalSegmentStart >> PAGE_SHIFT);
-    bool tracked = key != nullptr && _pageFrameNumberToMemoryDescriptorMap->setObject(key, chunk);
-    OSSafeReleaseNULL(chunk);
-    OSSafeReleaseNULL(key);
-    if (!tracked) {
-      // The page was freed along with its descriptor, so it must not be reported to the host
+    if (!insertChunk(chunk)) {
+      // Not reported to the host yet, so it can be handed back to the kernel
       HVSYSLOG("Failed to track balloon page");
+      freeChunk(chunk);
+      allocationFailed = true;
       break;
     }
 
-    response->inflationResponse.ranges[i].startPageFrameNumber = physicalSegmentStart >> PAGE_SHIFT;
-    response->inflationResponse.ranges[i].pageCount = 1;
+    UInt32 rangeIndex = response->inflationResponse.rangeCount;
+    response->inflationResponse.ranges[rangeIndex].startPageFrameNumber = chunk->basePageFrameNumber;
+    response->inflationResponse.ranges[rangeIndex].pageCount            = chunk->pageCount;
     ++response->inflationResponse.rangeCount;
+    balloonedPageCount += chunk->pageCount;
   }
 
-  // Stop inflating if this part of the request could not be fully satisfied
-  if (response->inflationResponse.rangeCount < pageCount) {
-    response->inflationResponse.morePages = 0;
-  }
+  // Stop inflating if the request could not be fully satisfied
+  *pageCount -= balloonedPageCount;
+  bool morePages = *pageCount > 0 && !allocationFailed;
+  response->inflationResponse.morePages = morePages;
 
   UInt32 responseLength = sizeof(HyperVDynamicMemoryMessageHeader) + sizeof(HyperVDynamicMemoryMessageBalloonInflationResponse) + sizeof(HyperVDynamicMemoryPageRange) * response->inflationResponse.rangeCount;
   response->header.size = responseLength;
@@ -292,7 +358,7 @@ UInt32 HyperVBalloon::inflateBalloon(UInt32 pageCount, bool morePages) {
   do {
     OSIncrementAtomic(&_transactionId);
     response->header.transactionId = _transactionId;
-    HVDBGLOG("Send inflation request with %u pages, length %u, transactionId %u", (UInt32) response->inflationResponse.rangeCount, responseLength, _transactionId);
+    HVDBGLOG("Send inflation request with %u pages in %u ranges, length %u, transactionId %u", balloonedPageCount, (UInt32) response->inflationResponse.rangeCount, responseLength, _transactionId);
 
     status = _hvDevice->writeInbandPacket(response, responseLength, false);
     if (status != kIOReturnSuccess) {
@@ -301,7 +367,7 @@ UInt32 HyperVBalloon::inflateBalloon(UInt32 pageCount, bool morePages) {
     }
   } while (status != kIOReturnSuccess);
 
-  return response->inflationResponse.rangeCount;
+  return morePages;
 }
 
 void HyperVBalloon::handleBalloonInflationRequest(HyperVDynamicMemoryMessageBalloonInflationRequest *request) {
@@ -319,35 +385,38 @@ void HyperVBalloon::handleBalloonInflationRequest(HyperVDynamicMemoryMessageBall
     pageCount = availablePages > kHyperVDynamicMemoryReservedPageCount ? (UInt32) (availablePages - kHyperVDynamicMemoryReservedPageCount) : 0;
   }
 
+  // The host waits for a final response even if nothing could be ballooned
+  bool morePages;
   do {
-    // Each ballooned page is reported as its own range
-    if (pageCount > kHyperVDynamicMemoryInflationMaxRangeCount) {
-      // A short response already told the host that no more pages follow
-      if (inflateBalloon(kHyperVDynamicMemoryInflationMaxRangeCount, true) < kHyperVDynamicMemoryInflationMaxRangeCount) {
-        break;
-      }
-      pageCount -= kHyperVDynamicMemoryInflationMaxRangeCount;
-    } else {
-      // The host waits for a final response even if nothing could be ballooned
-      inflateBalloon(pageCount, false);
-      pageCount = 0;
-    }
-  } while (pageCount > 0);
+    morePages = inflateBalloon(&pageCount);
+  } while (morePages);
 }
 
 void HyperVBalloon::handleBalloonDeflationRequest(HyperVDynamicMemoryMessageBalloonDeflationRequest *request) {
-  for (int i = 0; i < request->rangeCount; ++i) {
-    for (int j = 0; j < request->ranges[i].pageCount; ++j) {
-      const OSSymbol *key = pageFrameNumberToString(request->ranges[i].startPageFrameNumber + j);
-      IOBufferMemoryDescriptor* chunk = static_cast<IOBufferMemoryDescriptor*>(_pageFrameNumberToMemoryDescriptorMap->getObject(key));
-      if (chunk) {
-        chunk->complete();
-        _pageFrameNumberToMemoryDescriptorMap->removeObject(key);
-        HVDATADBGLOG("Memory block %llu released", request->ranges[i].startPageFrameNumber + j);
-      } else {
-        HVSYSLOG("Memory block %llu not found", request->ranges[i].startPageFrameNumber + j);
+  for (UInt32 i = 0; i < request->rangeCount; ++i) {
+    UInt64 pageFrameNumber    = request->ranges[i].startPageFrameNumber;
+    UInt64 endPageFrameNumber = pageFrameNumber + request->ranges[i].pageCount;
+
+    while (pageFrameNumber < endPageFrameNumber) {
+      UInt32 index;
+      if (!findChunk(pageFrameNumber, &index)) {
+        HVSYSLOG("Memory block %llu not found", pageFrameNumber);
+        ++pageFrameNumber;
+        continue;
       }
-      OSSafeReleaseNULL(key);
+
+      // Pages of a chunk can only go back to the kernel together, free it once the host returned all of them
+      HyperVBalloonChunk *chunk = _chunks[index];
+      UInt64 chunkEndPageFrameNumber    = chunk->basePageFrameNumber + chunk->pageCount;
+      UInt64 returnedEndPageFrameNumber = endPageFrameNumber < chunkEndPageFrameNumber ? endPageFrameNumber : chunkEndPageFrameNumber;
+      chunk->returnedPageCount += (UInt32) (returnedEndPageFrameNumber - pageFrameNumber);
+      HVDATADBGLOG("Memory blocks %llu-%llu released", pageFrameNumber, returnedEndPageFrameNumber - 1);
+
+      if (chunk->returnedPageCount >= chunk->pageCount) {
+        removeChunk(index);
+        freeChunk(chunk);
+      }
+      pageFrameNumber = returnedEndPageFrameNumber;
     }
   }
 

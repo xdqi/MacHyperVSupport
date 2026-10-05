@@ -43,9 +43,12 @@ bool HyperVBalloon::start(IOService *provider) {
     //
     // Allocate balloon state before the host can send any balloon request.
     //
-    _pageFrameNumberToMemoryDescriptorMap = OSDictionary::withCapacity(32768);
+    _chunks = static_cast<HyperVBalloonChunk **>(IOMalloc(sizeof(*_chunks) * kHyperVDynamicMemoryInitialChunkCapacity));
+    if (_chunks != nullptr) {
+      _chunkCapacity = kHyperVDynamicMemoryInitialChunkCapacity;
+    }
     _balloonInflationSendBuffer = IOMalloc(kHyperVDynamicMemoryResponsePacketSize);
-    if (_pageFrameNumberToMemoryDescriptorMap == nullptr || _balloonInflationSendBuffer == nullptr) {
+    if (_chunks == nullptr || _balloonInflationSendBuffer == nullptr) {
       HVSYSLOG("Failed to allocate balloon state");
       break;
     }
@@ -134,11 +137,14 @@ void HyperVBalloon::stop(IOService *provider) {
   // Pages still ballooned out are not backed by the host, freeing them would hand
   // unbacked memory back to the kernel. Leak them instead, like Linux does.
   //
-  if (_pageFrameNumberToMemoryDescriptorMap != nullptr && _pageFrameNumberToMemoryDescriptorMap->getCount() != 0) {
-    HVSYSLOG("Leaking %u ballooned pages", _pageFrameNumberToMemoryDescriptorMap->getCount());
-    _pageFrameNumberToMemoryDescriptorMap = nullptr;
+  if (_chunkCount != 0) {
+    HVSYSLOG("Leaking %u ballooned chunks", _chunkCount);
+  } else if (_chunks != nullptr) {
+    IOFree(_chunks, sizeof(*_chunks) * _chunkCapacity);
   }
-  OSSafeReleaseNULL(_pageFrameNumberToMemoryDescriptorMap);
+  _chunks        = nullptr;
+  _chunkCount    = 0;
+  _chunkCapacity = 0;
 
   super::stop(provider);
 }
