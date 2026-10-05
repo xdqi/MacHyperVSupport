@@ -88,9 +88,11 @@ void HyperVBalloon::handlePacket(VMBusPacketHeader *pktHeader, UInt32 pktHeaderL
 
       //
       // The protocol response packet always has a transaction ID of 0, wake using fixed transaction ID.
-      // This assumes the response length is of the correct size, set before the initial request.
       //
       if (_hvDevice->getPendingTransaction(_transactionId, &responseBuffer, &responseLength)) {
+        if (pktDataLength < responseLength) {
+          responseLength = pktDataLength;
+        }
         memcpy(responseBuffer, pktData, responseLength);
         _hvDevice->wakeTransaction(_transactionId);
       }
