@@ -215,12 +215,12 @@ void HyperVBalloon::handleInformationMessage(HyperVDynamicMemoryMessageInformati
 const OSSymbol* HyperVBalloon::pageFrameNumberToString(UInt64 pfn) {
   unsigned char buffer[7] = {0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x0};
   // 40-bit PFN encodes into null-terminated string in which every char has 7 effective bits (highest bit masked with 1)
-  buffer[0] |= pfn & 0x80;
-  buffer[1] |= (pfn >> 7) & 0x80;
-  buffer[2] |= (pfn >> 14) & 0x80;
-  buffer[3] |= (pfn >> 21) & 0x80;
-  buffer[4] |= (pfn >> 28) & 0x80;
-  buffer[5] |= (pfn >> 35) & 0x80;
+  buffer[0] |= pfn & 0x7F;
+  buffer[1] |= (pfn >> 7) & 0x7F;
+  buffer[2] |= (pfn >> 14) & 0x7F;
+  buffer[3] |= (pfn >> 21) & 0x7F;
+  buffer[4] |= (pfn >> 28) & 0x7F;
+  buffer[5] |= (pfn >> 35) & 0x7F;
   buffer[6] = 0;
   return OSSymbol::withCString((const char *) buffer);
 }
