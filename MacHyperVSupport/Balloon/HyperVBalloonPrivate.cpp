@@ -176,10 +176,12 @@ IOReturn HyperVBalloon::sendStatusReport(void*, void*, void*) {
   getPagesStatus(&committedPages, &usingPages);
   // We just post two fields below, other fields are not needed by hypervisor
   // Clamp to zero, a wrapped value would make the host balloon out even more memory
-  UInt64 freePages  = totalPages > usingPages ? totalPages - usingPages : 0;
-  UInt64 floorPages = getBalloonFloorPageCount();
-  message.statusReport.availablePages = freePages > floorPages ? freePages - floorPages : 0;
-  message.statusReport.committedPages = committedPages;
+  message.statusReport.availablePages = totalPages > usingPages ? totalPages - usingPages : 0;
+  //
+  // The host computes memory pressure from committed memory only. Ballooned pages are wired and thus
+  // already committed, like Linux also report the floor as committed so the host leaves it to the guest.
+  //
+  message.statusReport.committedPages = committedPages + getBalloonFloorPageCount();
 
   HVDATADBGLOG("Posting memory status report: available %llu, committed %llu", message.statusReport.availablePages, message.statusReport.committedPages);
 
