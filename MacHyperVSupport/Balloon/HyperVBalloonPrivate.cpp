@@ -139,7 +139,9 @@ IOReturn HyperVBalloon::sendStatusReport(void*, void*, void*) {
   UInt64 committedPages, usingPages;
   getPagesStatus(&committedPages, &usingPages);
   // We just post two fields below, other fields are not needed by hypervisor
-  message.statusReport.availablePages = totalPages - usingPages - kHyperVDynamicMemoryReservedPageCount;
+  // Clamp to zero, a wrapped value would make the host balloon out even more memory
+  UInt64 freePages = totalPages > usingPages ? totalPages - usingPages : 0;
+  message.statusReport.availablePages = freePages > kHyperVDynamicMemoryReservedPageCount ? freePages - kHyperVDynamicMemoryReservedPageCount : 0;
   message.statusReport.committedPages = committedPages;
 
   HVDBGLOG("Posting memory status report: available %llu, committed %llu", message.statusReport.availablePages, message.statusReport.committedPages);
