@@ -28,9 +28,14 @@ bool HyperVBalloon::setupBalloon() {
   message.header.size = sizeof(HyperVDynamicMemoryMessageHeader) + sizeof(HyperVDynamicMemoryMessageCapabilitiesReport);
   OSIncrementAtomic(&_transactionId);
   message.header.transactionId = _transactionId;
-  message.capabilitiesReport.supportBalloon    = 1;  // We support balloon only
-  message.capabilitiesReport.supportHotAdd     = 0;  // macOS doesn't support memory hot adding.
-  message.capabilitiesReport.hotAddAlignment   = 0;
+  message.capabilitiesReport.supportBalloon    = 1;
+  //
+  // macOS doesn't support memory hot adding, but the host does not issue balloon requests
+  // unless hot-add is advertised. Hot-add requests are refused in handleHotAddRequest().
+  // Alignment is log2 of the hot-add chunk size in MB (128 MB, same as Linux without memory hotplug).
+  //
+  message.capabilitiesReport.supportHotAdd     = 1;
+  message.capabilitiesReport.hotAddAlignment   = 7;
   message.capabilitiesReport.minimumPageCount  = 0;  // the same as
   message.capabilitiesReport.maximumPageNumber = -1; // both Windows and Linux drivers
     
@@ -189,8 +194,9 @@ void HyperVBalloon::handleHotAddRequest(HyperVDynamicMemoryMessageHotAddRequest 
   
   HVDBGLOG("Receiving hot add request");
   
-  message.hotAddResponse.result = 1;    // success, meaning we processed the request successfully, so the host will not try to hot-add again
-  message.hotAddResponse.pageCount = 0; // of course we don't support hot-add.
+  // Success with no pages added tells the host that hot-add failed permanently, so it will not retry.
+  message.hotAddResponse.result = 1;
+  message.hotAddResponse.pageCount = 0;
   
   HVDBGLOG("Sending hot add response");
   if (_hvDevice->writeInbandPacket(&message, sizeof(HyperVDynamicMemoryMessageHeader) + sizeof(HyperVDynamicMemoryMessageHotAddResponse), false) != kIOReturnSuccess) {
