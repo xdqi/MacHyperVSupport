@@ -236,7 +236,7 @@ const OSSymbol* HyperVBalloon::pageFrameNumberToString(UInt64 pfn) {
 }
 
 UInt32 HyperVBalloon::inflateBalloon(UInt32 pageCount, bool morePages) {
-  HVDBGLOG("This time inflate %lu pages and%s more", pageCount, morePages ? "" : " no");
+  HVDBGLOG("This time inflate %u pages and%s more", pageCount, morePages ? "" : " no");
 
   HyperVDynamicMemoryMessage *response = reinterpret_cast<HyperVDynamicMemoryMessage *>(_balloonInflationSendBuffer);
   memset(response, 0, kHyperVDynamicMemoryResponsePacketSize);
@@ -261,7 +261,7 @@ UInt32 HyperVBalloon::inflateBalloon(UInt32 pageCount, bool morePages) {
 
     IOByteCount physicalSegmentSize;
     addr64_t physicalSegmentStart = chunk->getPhysicalSegment(0, &physicalSegmentSize, 0);
-    HVDBGLOG("Allocated page: desc %p, raw %p, size %llu", chunk, physicalSegmentStart, physicalSegmentSize);
+    HVDBGLOG("Allocated page: desc %p, raw 0x%llX, size %llu", chunk, (UInt64) physicalSegmentStart, (UInt64) physicalSegmentSize);
 
     // save (PFN, MemoryDescriptor) into map for further query
     const OSSymbol *key = pageFrameNumberToString(physicalSegmentStart >> PAGE_SHIFT);
@@ -292,7 +292,7 @@ UInt32 HyperVBalloon::inflateBalloon(UInt32 pageCount, bool morePages) {
   do {
     OSIncrementAtomic(&_transactionId);
     response->header.transactionId = _transactionId;
-    HVDBGLOG("Send inflation request with %lu pages, length %u, transactionId %u", response->inflationResponse.rangeCount, responseLength, _transactionId);
+    HVDBGLOG("Send inflation request with %u pages, length %u, transactionId %u", (UInt32) response->inflationResponse.rangeCount, responseLength, _transactionId);
 
     status = _hvDevice->writeInbandPacket(response, responseLength, false);
     if (status != kIOReturnSuccess) {
@@ -311,7 +311,7 @@ void HyperVBalloon::handleBalloonInflationRequest(HyperVDynamicMemoryMessageBall
   getPagesStatus(nullptr, &usedPages);
   UInt64 availablePages = totalPages > usedPages ? totalPages - usedPages : 0;
 
-  HVDBGLOG("Received request to inflate %lu pages", pageCount);
+  HVDBGLOG("Received request to inflate %u pages", pageCount);
 
   // Never balloon out the reserved memory
   if (availablePages < (UInt64) pageCount + kHyperVDynamicMemoryReservedPageCount) {
