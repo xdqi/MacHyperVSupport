@@ -12,10 +12,6 @@
 #define kHyperVDynamicMemoryResponsePacketSize              (2 * PAGE_SIZE)
 #define kHyperVDynamicMemoryStatusReportIntervalMilliseconds 1000
 
-// Memory size that is reserved by guest regardless of memory usage
-#define kHyperVDynamicMemoryReservedMemorySize              (512 * 1024 * 1024)
-#define kHyperVDynamicMemoryReservedPageCount               (kHyperVDynamicMemoryReservedMemorySize / PAGE_SIZE)
-
 // Messages sent to the host must fit in a single Hyper-V page
 #define kHyperVDynamicMemoryMaxMessageSize                  4096
 

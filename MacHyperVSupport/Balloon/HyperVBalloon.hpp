@@ -61,6 +61,7 @@ private:
   bool insertChunk(HyperVBalloonChunk *chunk);
   void removeChunk(UInt32 index);
   static UInt64 getPhysicalMemorySizeInPages();
+  static UInt64 getBalloonFloorPageCount();
   static void getPagesStatus(UInt64 *committedPages, UInt64 *usingPages);
 
 public:

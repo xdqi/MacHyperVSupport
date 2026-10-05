@@ -129,6 +129,40 @@ UInt64 HyperVBalloon::getPhysicalMemorySizeInPages() {
   return totalMemorySize / PAGE_SIZE;
 }
 
+//
+// Memory that is never ballooned out, a continuous piecewise linear function of total memory (same as Linux):
+//
+//   total MB -> floor MB    gradient
+//         0          0
+//        16         16
+//        32         24
+//       128         72        (1/2)
+//       512        168        (1/4)
+//      2048        360        (1/8)
+//      8192        744       (1/16)
+//     32768       1512       (1/32)
+//
+UInt64 HyperVBalloon::getBalloonFloorPageCount() {
+  UInt64 totalPages = getPhysicalMemorySizeInPages();
+
+#define MB2PAGES(mb) (((UInt64) (mb)) << (20 - PAGE_SHIFT))
+  UInt64 floorPages;
+  if (totalPages < MB2PAGES(128)) {
+    floorPages = MB2PAGES(8) + (totalPages >> 1);
+  } else if (totalPages < MB2PAGES(512)) {
+    floorPages = MB2PAGES(40) + (totalPages >> 2);
+  } else if (totalPages < MB2PAGES(2048)) {
+    floorPages = MB2PAGES(104) + (totalPages >> 3);
+  } else if (totalPages < MB2PAGES(8192)) {
+    floorPages = MB2PAGES(232) + (totalPages >> 4);
+  } else {
+    floorPages = MB2PAGES(488) + (totalPages >> 5);
+  }
+#undef MB2PAGES
+
+  return floorPages;
+}
+
 IOReturn HyperVBalloon::sendStatusReport(void*, void*, void*) {
   HyperVDynamicMemoryMessage message;
   memset(&message, 0, sizeof(HyperVDynamicMemoryMessageHeader) + sizeof(HyperVDynamicMemoryMessageStatusReport));
@@ -142,8 +176,9 @@ IOReturn HyperVBalloon::sendStatusReport(void*, void*, void*) {
   getPagesStatus(&committedPages, &usingPages);
   // We just post two fields below, other fields are not needed by hypervisor
   // Clamp to zero, a wrapped value would make the host balloon out even more memory
-  UInt64 freePages = totalPages > usingPages ? totalPages - usingPages : 0;
-  message.statusReport.availablePages = freePages > kHyperVDynamicMemoryReservedPageCount ? freePages - kHyperVDynamicMemoryReservedPageCount : 0;
+  UInt64 freePages  = totalPages > usingPages ? totalPages - usingPages : 0;
+  UInt64 floorPages = getBalloonFloorPageCount();
+  message.statusReport.availablePages = freePages > floorPages ? freePages - floorPages : 0;
   message.statusReport.committedPages = committedPages;
 
   HVDATADBGLOG("Posting memory status report: available %llu, committed %llu", message.statusReport.availablePages, message.statusReport.committedPages);
@@ -396,12 +431,14 @@ void HyperVBalloon::handleBalloonInflationRequest(HyperVDynamicMemoryMessageBall
   getPagesStatus(nullptr, &usedPages);
   UInt64 availablePages = totalPages > usedPages ? totalPages - usedPages : 0;
 
+  UInt64 floorPages     = getBalloonFloorPageCount();
+
   HVDBGLOG("Received request to inflate %u pages", pageCount);
 
-  // Never balloon out the reserved memory
-  if (availablePages < (UInt64) pageCount + kHyperVDynamicMemoryReservedPageCount) {
-    HVSYSLOG("We don't have enough memory for balloon, filling a part of requested");
-    pageCount = availablePages > kHyperVDynamicMemoryReservedPageCount ? (UInt32) (availablePages - kHyperVDynamicMemoryReservedPageCount) : 0;
+  // Never balloon below the floor
+  if (availablePages < (UInt64) pageCount + floorPages) {
+    HVSYSLOG("Balloon floor reached, filling a part of requested");
+    pageCount = availablePages > floorPages ? (UInt32) (availablePages - floorPages) : 0;
   }
 
   // Try 2 MB chunks again for every request
