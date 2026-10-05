@@ -291,13 +291,14 @@ void HyperVBalloon::handleBalloonInflationRequest(HyperVDynamicMemoryMessageBall
   UInt64 totalPages = getPhysicalMemorySizeInPages();
   UInt64 usedPages;
   getPagesStatus(nullptr, &usedPages);
-  UInt64 availablePages = totalPages - usedPages;
-  
+  UInt64 availablePages = totalPages > usedPages ? totalPages - usedPages : 0;
+
   HVDBGLOG("Received request to inflate %lu pages", pageCount);
 
-  if (availablePages < pageCount + kHyperVDynamicMemoryReservedPageCount) {
+  // Never balloon out the reserved memory
+  if (availablePages < (UInt64) pageCount + kHyperVDynamicMemoryReservedPageCount) {
     HVSYSLOG("We don't have enough memory for balloon, filling a part of requested");
-    pageCount = pageCount > kHyperVDynamicMemoryReservedPageCount ? (pageCount - kHyperVDynamicMemoryReservedPageCount) : 0;
+    pageCount = availablePages > kHyperVDynamicMemoryReservedPageCount ? (UInt32) (availablePages - kHyperVDynamicMemoryReservedPageCount) : 0;
   }
 
   while (pageCount > 0) {
