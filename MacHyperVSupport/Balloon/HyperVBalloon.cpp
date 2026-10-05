@@ -41,6 +41,16 @@ bool HyperVBalloon::start(IOService *provider) {
 
   do {
     //
+    // Allocate balloon state before the host can send any balloon request.
+    //
+    _pageFrameNumberToMemoryDescriptorMap = OSDictionary::withCapacity(32768);
+    _balloonInflationSendBuffer = IOMalloc(kHyperVDynamicMemoryResponsePacketSize);
+    if (_pageFrameNumberToMemoryDescriptorMap == nullptr || _balloonInflationSendBuffer == nullptr) {
+      HVSYSLOG("Failed to allocate balloon state");
+      break;
+    }
+
+    //
     // Install packet handler.
     //
     status = _hvDevice->installPacketActions(this, OSMemberFunctionCast(HyperVVMBusDevice::PacketReadyAction, this, &HyperVBalloon::handlePacket), nullptr, kHyperVDynamicMemoryResponsePacketSize);
@@ -85,13 +95,6 @@ bool HyperVBalloon::start(IOService *provider) {
 
     HVDBGLOG("Initialized Hyper-V Dynamic Memory");
     result = true;
-    
-    // data structures used for ballooning
-    _pageFrameNumberToMemoryDescriptorMap = OSDictionary::withCapacity(32768);
-    _balloonInflationSendBuffer = IOMalloc(kHyperVDynamicMemoryResponsePacketSize);
-    if (_balloonInflationSendBuffer == nullptr) {
-      HVSYSLOG("Failed to allocate send buffer");
-    }
   } while (false);
 
   if (!result) {
