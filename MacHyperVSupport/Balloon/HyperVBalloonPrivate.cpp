@@ -334,13 +334,13 @@ void HyperVBalloon::handleBalloonDeflationRequest(HyperVDynamicMemoryMessageBall
   HyperVDynamicMemoryMessage message;
   // deflation response is empty so we don't add sizeof (which in fact is 1) to message size
   memset(&message, 0, sizeof(HyperVDynamicMemoryMessageHeader));
-  message.header.type = kDynamicMemoryMessageTypeBalloonInflationResponse;
+  message.header.type = kDynamicMemoryMessageTypeBalloonDeflationResponse;
   message.header.size = sizeof(HyperVDynamicMemoryMessageHeader);
   OSIncrementAtomic(&_transactionId);
   message.header.transactionId = _transactionId;
-  
+
   HVDBGLOG("Sending deflation response");
-  if (!_hvDevice->writeInbandPacket(&message, sizeof(HyperVDynamicMemoryMessageHeader), false)) {
+  if (_hvDevice->writeInbandPacket(&message, sizeof(HyperVDynamicMemoryMessageHeader), false) != kIOReturnSuccess) {
     HVSYSLOG("Deflation response send failed");
   }
 }
