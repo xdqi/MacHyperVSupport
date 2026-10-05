@@ -233,7 +233,7 @@ const OSSymbol* HyperVBalloon::pageFrameNumberToString(UInt64 pfn) {
   return OSSymbol::withCString((const char *) buffer);
 }
 
-bool HyperVBalloon::inflateBalloon(UInt32 pageCount, bool morePages) {
+UInt32 HyperVBalloon::inflateBalloon(UInt32 pageCount, bool morePages) {
   HVDBGLOG("This time inflate %lu pages and%s more", pageCount, morePages ? "" : " no");
 
   HyperVDynamicMemoryMessage *response = reinterpret_cast<HyperVDynamicMemoryMessage *>(_balloonInflationSendBuffer);
@@ -249,23 +249,37 @@ bool HyperVBalloon::inflateBalloon(UInt32 pageCount, bool morePages) {
   // We have to do one page per allocation
   // Hyper-V hypervisor will pass arbitrary fragmented memory block to guest which macOS guest need to release
   // while macOS doesn't support releasing part of a memory descriptor or splitting physical memory segment to indepedently relaseable parts
-  for (int i = 0; i < pageCount; ++i) {
+  for (UInt32 i = 0; i < pageCount; ++i) {
     // alloc memory in kernel page by page
     IOBufferMemoryDescriptor* chunk = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, kIOMemoryMapperNone, PAGE_SIZE, PAGE_SIZE);
+    if (chunk == nullptr) {
+      HVSYSLOG("Failed to allocate balloon page");
+      break;
+    }
 
     IOByteCount physicalSegmentSize;
     addr64_t physicalSegmentStart = chunk->getPhysicalSegment(0, &physicalSegmentSize, 0);
     HVDBGLOG("Allocated page: desc %p, raw %p, size %llu", chunk, physicalSegmentStart, physicalSegmentSize);
-    
+
     // save (PFN, MemoryDescriptor) into map for further query
     const OSSymbol *key = pageFrameNumberToString(physicalSegmentStart >> PAGE_SHIFT);
-    _pageFrameNumberToMemoryDescriptorMap->setObject(key, chunk);
+    bool tracked = key != nullptr && _pageFrameNumberToMemoryDescriptorMap->setObject(key, chunk);
     OSSafeReleaseNULL(chunk);
     OSSafeReleaseNULL(key);
+    if (!tracked) {
+      // The page was freed along with its descriptor, so it must not be reported to the host
+      HVSYSLOG("Failed to track balloon page");
+      break;
+    }
 
     response->inflationResponse.ranges[i].startPageFrameNumber = physicalSegmentStart >> PAGE_SHIFT;
     response->inflationResponse.ranges[i].pageCount = 1;
     ++response->inflationResponse.rangeCount;
+  }
+
+  // Stop inflating if this part of the request could not be fully satisfied
+  if (response->inflationResponse.rangeCount < pageCount) {
+    response->inflationResponse.morePages = 0;
   }
 
   UInt32 responseLength = sizeof(HyperVDynamicMemoryMessageHeader) + sizeof(HyperVDynamicMemoryMessageBalloonInflationResponse) + sizeof(HyperVDynamicMemoryPageRange) * response->inflationResponse.rangeCount;
@@ -284,8 +298,8 @@ bool HyperVBalloon::inflateBalloon(UInt32 pageCount, bool morePages) {
       IOSleep(20);
     }
   } while (status != kIOReturnSuccess);
-  
-  return true;
+
+  return response->inflationResponse.rangeCount;
 }
 
 void HyperVBalloon::handleBalloonInflationRequest(HyperVDynamicMemoryMessageBalloonInflationRequest *request) {
@@ -306,7 +320,10 @@ void HyperVBalloon::handleBalloonInflationRequest(HyperVDynamicMemoryMessageBall
   do {
     // Each ballooned page is reported as its own range
     if (pageCount > kHyperVDynamicMemoryInflationMaxRangeCount) {
-      inflateBalloon(kHyperVDynamicMemoryInflationMaxRangeCount, true);
+      // A short response already told the host that no more pages follow
+      if (inflateBalloon(kHyperVDynamicMemoryInflationMaxRangeCount, true) < kHyperVDynamicMemoryInflationMaxRangeCount) {
+        break;
+      }
       pageCount -= kHyperVDynamicMemoryInflationMaxRangeCount;
     } else {
       // The host waits for a final response even if nothing could be ballooned
