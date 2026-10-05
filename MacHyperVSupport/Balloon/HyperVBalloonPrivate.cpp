@@ -301,9 +301,10 @@ void HyperVBalloon::handleBalloonInflationRequest(HyperVDynamicMemoryMessageBall
   }
 
   while (pageCount > 0) {
-    if (pageCount > kHyperVDynamicMemoryInflationChunkPageCount) {
-      inflateBalloon(kHyperVDynamicMemoryInflationChunkPageCount, true);
-      pageCount -= kHyperVDynamicMemoryInflationChunkPageCount;
+    // Each ballooned page is reported as its own range
+    if (pageCount > kHyperVDynamicMemoryInflationMaxRangeCount) {
+      inflateBalloon(kHyperVDynamicMemoryInflationMaxRangeCount, true);
+      pageCount -= kHyperVDynamicMemoryInflationMaxRangeCount;
     } else {
       inflateBalloon(pageCount, false);
       pageCount = 0;

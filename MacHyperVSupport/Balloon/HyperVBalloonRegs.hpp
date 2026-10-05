@@ -16,9 +16,8 @@
 #define kHyperVDynamicMemoryReservedMemorySize              (512 * 1024 * 1024)
 #define kHyperVDynamicMemoryReservedPageCount               (kHyperVDynamicMemoryReservedMemorySize / PAGE_SIZE)
 
-// Balloon max inflation size in one inflation response
-#define kHyperVDynamicMemoryInflationChunkSize              (2 * 1024 * 1024)
-#define kHyperVDynamicMemoryInflationChunkPageCount         (kHyperVDynamicMemoryInflationChunkSize / PAGE_SIZE)
+// Messages sent to the host must fit in a single Hyper-V page
+#define kHyperVDynamicMemoryMaxMessageSize                  4096
 
 //
 // Dynamic memory protocol versions (major in high word, minor in low word).
@@ -220,5 +219,10 @@ typedef struct __attribute__((packed)) {
     HyperVDynamicMemoryMessageInformation              information;
   };
 } HyperVDynamicMemoryMessage;
+
+// Balloon max page ranges in one inflation response
+#define kHyperVDynamicMemoryInflationMaxRangeCount \
+  ((UInt32) ((kHyperVDynamicMemoryMaxMessageSize - sizeof(HyperVDynamicMemoryMessageHeader) - \
+    sizeof(HyperVDynamicMemoryMessageBalloonInflationResponse)) / sizeof(HyperVDynamicMemoryPageRange)))
 
 #endif /* HyperVBalloonRegs_hpp */
