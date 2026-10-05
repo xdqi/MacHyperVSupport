@@ -303,16 +303,17 @@ void HyperVBalloon::handleBalloonInflationRequest(HyperVDynamicMemoryMessageBall
     pageCount = availablePages > kHyperVDynamicMemoryReservedPageCount ? (UInt32) (availablePages - kHyperVDynamicMemoryReservedPageCount) : 0;
   }
 
-  while (pageCount > 0) {
+  do {
     // Each ballooned page is reported as its own range
     if (pageCount > kHyperVDynamicMemoryInflationMaxRangeCount) {
       inflateBalloon(kHyperVDynamicMemoryInflationMaxRangeCount, true);
       pageCount -= kHyperVDynamicMemoryInflationMaxRangeCount;
     } else {
+      // The host waits for a final response even if nothing could be ballooned
       inflateBalloon(pageCount, false);
       pageCount = 0;
     }
-  }
+  } while (pageCount > 0);
 }
 
 void HyperVBalloon::handleBalloonDeflationRequest(HyperVDynamicMemoryMessageBalloonDeflationRequest *request) {
