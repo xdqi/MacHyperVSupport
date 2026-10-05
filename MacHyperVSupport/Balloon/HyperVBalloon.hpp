@@ -22,6 +22,8 @@ typedef struct {
   UInt32                    pageCount;
   UInt32                    returnedPageCount;
   IOBufferMemoryDescriptor  *memoryDescriptor;
+  // Pages already returned by the host
+  UInt64                    returnedPages[kHyperVDynamicMemoryChunkPageCount / 64];
 } HyperVBalloonChunk;
 
 class HyperVBalloon : public IOService {
@@ -42,6 +44,7 @@ private:
   HyperVBalloonChunk **_chunks                              = nullptr;
   UInt32              _chunkCount                           = 0;
   UInt32              _chunkCapacity                        = 0;
+  bool                _useLargeChunks                       = true;
 
   void handlePacket(VMBusPacketHeader *pktHeader, UInt32 pktHeaderLength, UInt8 *pktData, UInt32 pktDataLength);
   void handleBalloonInflationRequest(HyperVDynamicMemoryMessageBalloonInflationRequest *request);
@@ -52,7 +55,7 @@ private:
   bool doProtocolNegotitation(HyperVDynamicMemoryProtocolVersion version, bool isLastAttempt);
   IOReturn sendStatusReport(void*, void*, void*);
   bool inflateBalloon(UInt32 *pageCount);
-  HyperVBalloonChunk *allocateChunk();
+  HyperVBalloonChunk *allocateChunk(UInt32 pageCount);
   void freeChunk(HyperVBalloonChunk *chunk);
   bool findChunk(UInt64 pageFrameNumber, UInt32 *index);
   bool insertChunk(HyperVBalloonChunk *chunk);

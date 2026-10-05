@@ -222,10 +222,24 @@ void HyperVBalloon::handleInformationMessage(HyperVDynamicMemoryMessageInformati
   }
 }
 
-HyperVBalloonChunk *HyperVBalloon::allocateChunk() {
-  // alloc memory in kernel page by page
-  IOBufferMemoryDescriptor *memoryDescriptor = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, kIOMemoryMapperNone, PAGE_SIZE, PAGE_SIZE);
+HyperVBalloonChunk *HyperVBalloon::allocateChunk(UInt32 pageCount) {
+  //
+  // Multi-page chunks are physically contiguous and aligned to their size,
+  // so each chunk can be reported to the host as a single page range.
+  //
+  IOByteCount  chunkSize = (IOByteCount) pageCount * PAGE_SIZE;
+  IOOptionBits options   = kIOMemoryMapperNone | (pageCount > 1 ? kIOMemoryPhysicallyContiguous : 0);
+  IOBufferMemoryDescriptor *memoryDescriptor = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, options, chunkSize, chunkSize);
   if (memoryDescriptor == nullptr) {
+    return nullptr;
+  }
+
+  IOByteCount physicalSegmentSize;
+  addr64_t physicalSegmentStart = memoryDescriptor->getPhysicalSegment(0, &physicalSegmentSize, 0);
+  HVDATADBGLOG("Allocated %u pages: desc %p, raw 0x%llX, size %llu", pageCount, memoryDescriptor, (UInt64) physicalSegmentStart, (UInt64) physicalSegmentSize);
+  if (physicalSegmentSize < chunkSize) {
+    HVSYSLOG("Balloon chunk at 0x%llX is not physically contiguous", (UInt64) physicalSegmentStart);
+    memoryDescriptor->release();
     return nullptr;
   }
 
@@ -235,13 +249,9 @@ HyperVBalloonChunk *HyperVBalloon::allocateChunk() {
     return nullptr;
   }
 
-  IOByteCount physicalSegmentSize;
-  addr64_t physicalSegmentStart = memoryDescriptor->getPhysicalSegment(0, &physicalSegmentSize, 0);
-  HVDATADBGLOG("Allocated page: desc %p, raw 0x%llX, size %llu", memoryDescriptor, (UInt64) physicalSegmentStart, (UInt64) physicalSegmentSize);
-
+  memset(chunk, 0, sizeof(*chunk));
   chunk->basePageFrameNumber = physicalSegmentStart >> PAGE_SHIFT;
-  chunk->pageCount           = 1;
-  chunk->returnedPageCount   = 0;
+  chunk->pageCount           = pageCount;
   chunk->memoryDescriptor    = memoryDescriptor;
   return chunk;
 }
@@ -318,13 +328,22 @@ bool HyperVBalloon::inflateBalloon(UInt32 *pageCount) {
   response->inflationResponse.rangeCount = 0;
 
   //
-  // Each ballooned chunk is reported as its own page range.
+  // Each ballooned chunk is reported as its own page range, 2 MB chunks are used when possible.
   // The host may return arbitrary parts of a chunk, it is freed once all of its pages are returned.
   //
   UInt32 balloonedPageCount = 0;
   bool   allocationFailed   = false;
   while (balloonedPageCount < *pageCount && response->inflationResponse.rangeCount < kHyperVDynamicMemoryInflationMaxRangeCount) {
-    HyperVBalloonChunk *chunk = allocateChunk();
+    UInt32 remainingPageCount = *pageCount - balloonedPageCount;
+    UInt32 chunkPageCount     = (_useLargeChunks && remainingPageCount >= kHyperVDynamicMemoryChunkPageCount) ? kHyperVDynamicMemoryChunkPageCount : 1;
+
+    HyperVBalloonChunk *chunk = allocateChunk(chunkPageCount);
+    if (chunk == nullptr && chunkPageCount > 1) {
+      // Fall back to single pages for the rest of the request, like Linux
+      HVDBGLOG("Failed to allocate a 2 MB balloon chunk, falling back to single pages");
+      _useLargeChunks = false;
+      continue;
+    }
     if (chunk == nullptr) {
       HVSYSLOG("Failed to allocate balloon page");
       allocationFailed = true;
@@ -385,6 +404,9 @@ void HyperVBalloon::handleBalloonInflationRequest(HyperVDynamicMemoryMessageBall
     pageCount = availablePages > kHyperVDynamicMemoryReservedPageCount ? (UInt32) (availablePages - kHyperVDynamicMemoryReservedPageCount) : 0;
   }
 
+  // Try 2 MB chunks again for every request
+  _useLargeChunks = true;
+
   // The host waits for a final response even if nothing could be ballooned
   bool morePages;
   do {
@@ -409,7 +431,15 @@ void HyperVBalloon::handleBalloonDeflationRequest(HyperVDynamicMemoryMessageBall
       HyperVBalloonChunk *chunk = _chunks[index];
       UInt64 chunkEndPageFrameNumber    = chunk->basePageFrameNumber + chunk->pageCount;
       UInt64 returnedEndPageFrameNumber = endPageFrameNumber < chunkEndPageFrameNumber ? endPageFrameNumber : chunkEndPageFrameNumber;
-      chunk->returnedPageCount += (UInt32) (returnedEndPageFrameNumber - pageFrameNumber);
+      // Count every page once, even if the host returns it more than once
+      for (UInt64 returnedPageFrameNumber = pageFrameNumber; returnedPageFrameNumber < returnedEndPageFrameNumber; ++returnedPageFrameNumber) {
+        UInt32 pageIndex = (UInt32) (returnedPageFrameNumber - chunk->basePageFrameNumber);
+        UInt64 pageBit   = 1ULL << (pageIndex % 64);
+        if ((chunk->returnedPages[pageIndex / 64] & pageBit) == 0) {
+          chunk->returnedPages[pageIndex / 64] |= pageBit;
+          ++chunk->returnedPageCount;
+        }
+      }
       HVDATADBGLOG("Memory blocks %llu-%llu released", pageFrameNumber, returnedEndPageFrameNumber - 1);
 
       if (chunk->returnedPageCount >= chunk->pageCount) {

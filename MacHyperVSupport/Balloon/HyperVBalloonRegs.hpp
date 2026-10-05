@@ -19,6 +19,10 @@
 // Messages sent to the host must fit in a single Hyper-V page
 #define kHyperVDynamicMemoryMaxMessageSize                  4096
 
+// Ballooned memory is allocated in physically contiguous 2 MB chunks when possible
+#define kHyperVDynamicMemoryChunkSize                       (2 * 1024 * 1024)
+#define kHyperVDynamicMemoryChunkPageCount                  (kHyperVDynamicMemoryChunkSize / PAGE_SIZE)
+
 // Initial number of ballooned chunks that can be tracked, grows as needed
 #define kHyperVDynamicMemoryInitialChunkCapacity            1024
 
