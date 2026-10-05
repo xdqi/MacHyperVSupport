@@ -15,9 +15,9 @@
 
 bool HyperVBalloon::setupBalloon() {
   // Protocol version negotiation
-  if (!doProtocolNegotitation(kHyperVDynamicMemoryProtocolVersion3, false) &&
-      !doProtocolNegotitation(kHyperVDynamicMemoryProtocolVersion2, false) &&
-      !doProtocolNegotitation(kHyperVDynamicMemoryProtocolVersion1, true)) {
+  if (!doProtocolNegotitation(kHyperVDynamicMemoryProtocolVersionWin10, false) &&
+      !doProtocolNegotitation(kHyperVDynamicMemoryProtocolVersionWin8, false) &&
+      !doProtocolNegotitation(kHyperVDynamicMemoryProtocolVersionWin7, true)) {
     return false;
   }
   
