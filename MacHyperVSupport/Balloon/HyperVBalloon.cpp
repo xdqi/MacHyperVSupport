@@ -104,24 +104,27 @@ bool HyperVBalloon::start(IOService *provider) {
 void HyperVBalloon::stop(IOService *provider) {
   HVDBGLOG("Hyper-V Dynamic Memory is stopping");
 
+  //
+  // Stop status reports before closing the channel they are sent on.
+  //
+  if (_timerSource != nullptr) {
+    _timerSource->cancelTimeout();
+    if (_workLoop != nullptr) {
+      _workLoop->removeEventSource(_timerSource);
+    }
+    OSSafeReleaseNULL(_timerSource);
+  }
+  OSSafeReleaseNULL(_workLoop);
+
   if (_hvDevice != nullptr) {
     _hvDevice->closeVMBusChannel();
     _hvDevice->uninstallPacketActions();
     OSSafeReleaseNULL(_hvDevice);
   }
 
-  if (_timerSource != nullptr) {
-    _timerSource->cancelTimeout();
-    OSSafeReleaseNULL(_timerSource);
-  }
-
-  if (_workLoop != nullptr) {
-    _workLoop->removeEventSource(_timerSource);
-    OSSafeReleaseNULL(_workLoop);
-  }
-
   if (_balloonInflationSendBuffer != nullptr) {
     IOFree(_balloonInflationSendBuffer, kHyperVDynamicMemoryResponsePacketSize);
+    _balloonInflationSendBuffer = nullptr;
   }
   
   OSSafeReleaseNULL(_pageFrameNumberToMemoryDescriptorMap);
