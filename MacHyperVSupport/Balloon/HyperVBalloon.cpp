@@ -6,6 +6,7 @@
 //
 
 #include "HyperVBalloon.hpp"
+#include "HyperVBalloonAccounting.hpp"
 #include "HyperVBalloonRegs.hpp"
 
 OSDefineMetaClassAndStructors(HyperVBalloon, super);
@@ -29,6 +30,15 @@ bool HyperVBalloon::start(IOService *provider) {
 
   if (HVCheckOffArg()) {
     HVSYSLOG("Disabling Hyper-V Dynamic Memory due to boot arg");
+    OSSafeReleaseNULL(_hvDevice);
+    return false;
+  }
+
+  //
+  // Status reports need the kernel memory statistics, which are resolved through Lilu.
+  //
+  if (!HyperVBalloonAccounting::canGetVMStatistics()) {
+    HVSYSLOG("Disabling Hyper-V Dynamic Memory as kernel memory statistics are unavailable");
     OSSafeReleaseNULL(_hvDevice);
     return false;
   }

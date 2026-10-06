@@ -8,11 +8,15 @@
 #ifndef HyperVBalloonAccounting_hpp
 #define HyperVBalloonAccounting_hpp
 
+#include <kern/host.h>
 #include <kern/locks.h>
+#include <mach/vm_statistics.h>
 #include <Headers/kern_patcher.hpp>
 
 #include "HyperV.hpp"
 
+//
+// Provides the kernel memory statistics, which are not exported to kexts.
 //
 // Hides ballooned pages from the kernel memory statistics, like Linux removes them from MemTotal.
 // Ballooned pages stay wired by their memory descriptors, only the kernel counters are adjusted,
@@ -28,8 +32,15 @@ private:
   static HyperVBalloonAccounting *_instance;
 
   //
-  // Kernel globals, resolved through Lilu.
+  // Kernel functions and globals, resolved through Lilu.
   //
+#if defined(__i386__)
+  typedef kern_return_t (*HostStatisticsFunction)(host_t host, host_flavor_t flavor, host_info_t info, mach_msg_type_number_t *count);
+#else
+  typedef kern_return_t (*HostStatisticsFunction)(host_t host, host_flavor_t flavor, host_info64_t info, mach_msg_type_number_t *count);
+#endif
+  HostStatisticsFunction _hostStatistics = nullptr;
+
   lck_mtx_t     *_vmPageQueueLock       = nullptr;
   unsigned int  *_vmPageWireCount       = nullptr;
   UInt64        *_maxMem                = nullptr;
@@ -37,6 +48,7 @@ private:
   UInt64        *_machineInfoMaxMem     = nullptr;
   UInt64        *_vmGlobalUserWireLimit = nullptr;
 
+  bool          _canHide                = false;
   bool          _isEnabled              = false;
 
   //
@@ -68,6 +80,19 @@ public:
     }
 
     return _instance;
+  }
+
+  //
+  // Gets the kernel VM statistics, HOST_VM_INFO64 on 64-bit kernels and HOST_VM_INFO on 32-bit kernels.
+  //
+#if defined(__i386__)
+  static kern_return_t getVMStatistics(vm_statistics_t statistics, mach_msg_type_number_t *count);
+#else
+  static kern_return_t getVMStatistics(vm_statistics64_t statistics, mach_msg_type_number_t *count);
+#endif
+
+  static bool canGetVMStatistics() {
+    return _instance != nullptr && _instance->_hostStatistics != nullptr;
   }
 
   //

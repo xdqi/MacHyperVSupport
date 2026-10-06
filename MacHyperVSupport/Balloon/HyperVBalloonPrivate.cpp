@@ -7,7 +7,6 @@
 
 #include <string.h>
 #include <mach/vm_statistics.h>
-#include <kern/host.h>
 #include <sys/sysctl.h>
 
 #include "HyperVBalloon.hpp"
@@ -196,11 +195,11 @@ void HyperVBalloon::getPagesStatus(UInt64 *committedPages, UInt64 *usingPages) {
 #if defined(__i386__)
   static vm_statistics_data_t vmStat;
   vmStatSize = HOST_VM_INFO_COUNT;
-  host_statistics(host_self(), HOST_VM_INFO, (host_info_t) &vmStat, &vmStatSize);
+  HyperVBalloonAccounting::getVMStatistics(&vmStat, &vmStatSize);
 #elif defined(__x86_64__)
   static vm_statistics64_data_t vmStat;
   vmStatSize = HOST_VM_INFO64_COUNT;
-  host_statistics64(host_self(), HOST_VM_INFO64, (host_info64_t) &vmStat, &vmStatSize);
+  HyperVBalloonAccounting::getVMStatistics(&vmStat, &vmStatSize);
 #else
 #error Unsupported arch
 #endif

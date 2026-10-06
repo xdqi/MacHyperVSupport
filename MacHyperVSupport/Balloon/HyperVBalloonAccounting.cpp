@@ -41,11 +41,10 @@ void HyperVBalloonAccounting::init() {
   //
   if (getKernelVersion() < KernelVersion::SnowLeopard) {
     HVDBGLOG("Ballooned memory is not hidden on this kernel");
-    return;
-  }
-  if (checkKernelArgument("-hvballnohide")) {
+  } else if (checkKernelArgument("-hvballnohide")) {
     HVSYSLOG("Ballooned memory is not hidden due to boot arg");
-    return;
+  } else {
+    _canHide = true;
   }
 
   lilu.onPatcherLoadForce([](void *user, KernelPatcher &patcher) {
@@ -59,6 +58,19 @@ void HyperVBalloonAccounting::onLiluPatcherLoad(KernelPatcher &patcher) {
     patcher.clearError();
     return address;
   };
+
+#if defined(__i386__)
+  _hostStatistics = reinterpret_cast<HostStatisticsFunction>(solveSymbol("_host_statistics"));
+#else
+  _hostStatistics = reinterpret_cast<HostStatisticsFunction>(solveSymbol("_host_statistics64"));
+#endif
+  if (_hostStatistics == nullptr) {
+    HVSYSLOG("Failed to resolve host statistics");
+  }
+
+  if (!_canHide) {
+    return;
+  }
 
   //
   // vm_page_queue_lock is a macro for a vm_page_locks field since 10.8.
@@ -109,6 +121,22 @@ void HyperVBalloonAccounting::onLiluPatcherLoad(KernelPatcher &patcher) {
   HVDBGLOG("Ballooned memory is hidden from kernel memory statistics (actual %u, machine info %u, wire limit %u)",
            _maxMemActual != nullptr, _machineInfoMaxMem != nullptr, _vmGlobalUserWireLimit != nullptr);
 }
+
+#if defined(__i386__)
+kern_return_t HyperVBalloonAccounting::getVMStatistics(vm_statistics_t statistics, mach_msg_type_number_t *count) {
+  if (!canGetVMStatistics()) {
+    return KERN_FAILURE;
+  }
+  return _instance->_hostStatistics(host_priv_self(), HOST_VM_INFO, reinterpret_cast<host_info_t>(statistics), count);
+}
+#else
+kern_return_t HyperVBalloonAccounting::getVMStatistics(vm_statistics64_t statistics, mach_msg_type_number_t *count) {
+  if (!canGetVMStatistics()) {
+    return KERN_FAILURE;
+  }
+  return _instance->_hostStatistics(host_priv_self(), HOST_VM_INFO64, reinterpret_cast<host_info64_t>(statistics), count);
+}
+#endif
 
 bool HyperVBalloonAccounting::hide(UInt32 pageCount) {
   if (!_isEnabled) {
