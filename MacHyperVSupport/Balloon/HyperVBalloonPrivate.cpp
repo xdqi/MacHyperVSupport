@@ -163,6 +163,15 @@ UInt64 HyperVBalloon::getBalloonFloorPageCount() {
 }
 
 IOReturn HyperVBalloon::sendStatusReport(void*, void*, void*) {
+  //
+  // The kernel memory statistics are resolved through Lilu, which may happen after this driver started.
+  // Do not report anything until then, the host does not balloon without status reports.
+  //
+  if (!HyperVBalloonAccounting::canGetVMStatistics()) {
+    _timerSource->setTimeoutMS(kHyperVDynamicMemoryStatusReportIntervalMilliseconds);
+    return kIOReturnSuccess;
+  }
+
   HyperVDynamicMemoryMessage message;
   memset(&message, 0, sizeof(HyperVDynamicMemoryMessageHeader) + sizeof(HyperVDynamicMemoryMessageStatusReport));
   message.header.type = kDynamicMemoryMessageTypeStatusReport;
@@ -444,6 +453,12 @@ void HyperVBalloon::handleBalloonInflationRequest(HyperVDynamicMemoryMessageBall
   UInt64 floorPages     = getBalloonFloorPageCount();
 
   HVDBGLOG("Received request to inflate %u pages", pageCount);
+
+  // Without kernel memory statistics the available memory is unknown
+  if (!HyperVBalloonAccounting::canGetVMStatistics()) {
+    HVSYSLOG("Kernel memory statistics are unavailable, not inflating");
+    pageCount = 0;
+  }
 
   // Never balloon below the floor
   if (availablePages < (UInt64) pageCount + floorPages) {

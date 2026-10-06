@@ -63,6 +63,8 @@ private:
   //
   void init();
   void onLiluPatcherLoad(KernelPatcher &patcher);
+  static mach_vm_address_t solveSymbol(KernelPatcher &patcher, const char *symbol);
+  void enableHiding(KernelPatcher &patcher);
 
   bool hide(UInt32 pageCount);
   void unhide(UInt32 pageCount);

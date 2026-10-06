@@ -60,34 +60,43 @@ void HyperVBalloonAccounting::init() {
 }
 
 void HyperVBalloonAccounting::onLiluPatcherLoad(KernelPatcher &patcher) {
-  auto solveSymbol = [&patcher](const char *symbol) {
-    mach_vm_address_t address = patcher.solveSymbol(KernelPatcher::KernelID, symbol);
-    patcher.clearError();
-    return address;
-  };
-
 #if defined(__i386__)
-  _hostStatistics = reinterpret_cast<HostStatisticsFunction>(solveSymbol("_host_statistics"));
+  HostStatisticsFunction hostStatistics = reinterpret_cast<HostStatisticsFunction>(solveSymbol(patcher, "_host_statistics"));
 #else
-  _hostStatistics = reinterpret_cast<HostStatisticsFunction>(solveSymbol("_host_statistics64"));
+  HostStatisticsFunction hostStatistics = reinterpret_cast<HostStatisticsFunction>(solveSymbol(patcher, "_host_statistics64"));
 #endif
-  if (_hostStatistics == nullptr) {
+  if (hostStatistics == nullptr) {
     HVSYSLOG("Failed to resolve host statistics");
   }
 
-  if (!_canHide) {
-    return;
+  if (_canHide) {
+    enableHiding(patcher);
   }
 
   //
+  // Lilu calls this after the balloon driver may have started, which does not balloon without statistics.
+  // Provide them last, so all ballooned pages can be hidden.
+  //
+  HyperVCompilerBarrier();
+  _hostStatistics = hostStatistics;
+}
+
+mach_vm_address_t HyperVBalloonAccounting::solveSymbol(KernelPatcher &patcher, const char *symbol) {
+  mach_vm_address_t address = patcher.solveSymbol(KernelPatcher::KernelID, symbol);
+  patcher.clearError();
+  return address;
+}
+
+void HyperVBalloonAccounting::enableHiding(KernelPatcher &patcher) {
+  //
   // vm_page_queue_lock is a macro for a vm_page_locks field, it is not a symbol of its own.
   //
-  HyperVKernelVMLocksArray *vmPageLocks = reinterpret_cast<HyperVKernelVMLocksArray *>(solveSymbol("_vm_page_locks"));
+  HyperVKernelVMLocksArray *vmPageLocks = reinterpret_cast<HyperVKernelVMLocksArray *>(solveSymbol(patcher, "_vm_page_locks"));
   if (vmPageLocks != nullptr) {
     _vmPageQueueLock = reinterpret_cast<lck_mtx_t *>(&vmPageLocks->vmPageQueueLock);
   }
-  _vmPageWireCount = reinterpret_cast<unsigned int *>(solveSymbol("_vm_page_wire_count"));
-  _maxMem          = reinterpret_cast<UInt64 *>(solveSymbol("_max_mem"));
+  _vmPageWireCount = reinterpret_cast<unsigned int *>(solveSymbol(patcher, "_vm_page_wire_count"));
+  _maxMem          = reinterpret_cast<UInt64 *>(solveSymbol(patcher, "_max_mem"));
   if (_vmPageQueueLock == nullptr || _vmPageWireCount == nullptr || _maxMem == nullptr) {
     HVSYSLOG("Failed to resolve kernel memory counters, ballooned memory is not hidden");
     return;
@@ -100,7 +109,7 @@ void HyperVBalloonAccounting::onLiluPatcherLoad(KernelPatcher &patcher) {
   //
   // hw.memsize is max_mem_actual on macOS 11 and newer, and max_mem before.
   //
-  _maxMemActual = reinterpret_cast<UInt64 *>(solveSymbol("_max_mem_actual"));
+  _maxMemActual = reinterpret_cast<UInt64 *>(solveSymbol(patcher, "_max_mem_actual"));
   if (_maxMemActual != nullptr && *_maxMemActual != *_maxMem) {
     HVSYSLOG("Actual memory size %llu differs from %llu, ballooned memory is not hidden", *_maxMemActual, *_maxMem);
     return;
@@ -110,13 +119,13 @@ void HyperVBalloonAccounting::onLiluPatcherLoad(KernelPatcher &patcher) {
   // Optional counters, the memory size reported by host_info() and the user wire limit.
   // The user wire limit is checked against the wired page count, so it is lowered by the same amount.
   //
-  HyperVKernelMachineInfo *machineInfo = reinterpret_cast<HyperVKernelMachineInfo *>(solveSymbol("_machine_info"));
+  HyperVKernelMachineInfo *machineInfo = reinterpret_cast<HyperVKernelMachineInfo *>(solveSymbol(patcher, "_machine_info"));
   if (machineInfo != nullptr && machineInfo->max_mem == *_maxMem) {
     _machineInfoMaxMem = &machineInfo->max_mem;
   } else {
     HVDBGLOG("Memory size in machine info not found");
   }
-  _vmGlobalUserWireLimit = reinterpret_cast<UInt64 *>(solveSymbol("_vm_global_user_wire_limit"));
+  _vmGlobalUserWireLimit = reinterpret_cast<UInt64 *>(solveSymbol(patcher, "_vm_global_user_wire_limit"));
   if (_vmGlobalUserWireLimit != nullptr && *_vmGlobalUserWireLimit > *_maxMem) {
     HVDBGLOG("Unexpected user wire limit %llu", *_vmGlobalUserWireLimit);
     _vmGlobalUserWireLimit = nullptr;
