@@ -33,6 +33,13 @@ typedef struct {
 } HyperVKernelVMLocksArray;
 static_assert(offsetof(HyperVKernelVMLocksArray, vmPageQueueLock) == 64, "vm_page_queue_lock2 must be at offset 64");
 
+//
+// Keeps the compiler from reordering the counter updates, x86 already keeps stores in order for other CPUs.
+//
+static inline void HyperVCompilerBarrier() {
+  __asm__ volatile ("" ::: "memory");
+}
+
 void HyperVBalloonAccounting::init() {
   HVCheckDebugArgs();
 
@@ -150,9 +157,13 @@ bool HyperVBalloonAccounting::hide(UInt32 pageCount) {
   // The kernel only changes the wired page count with the page queue lock held.
   // The pages are wired and thus already counted, the check only guards against kernel accounting changes.
   //
+  // Readers compare the wired page count against the memory size and the user wire limit without the lock.
+  // Lower the wired page count first, so they never see less memory available than there is.
+  //
   lck_mtx_lock(_vmPageQueueLock);
   if (*_vmPageWireCount >= pageCount && *_maxMem > byteCount) {
     *_vmPageWireCount -= pageCount;
+    HyperVCompilerBarrier();
     *_maxMem          -= byteCount;
     if (_maxMemActual != nullptr) {
       *_maxMemActual -= byteCount;
@@ -188,9 +199,12 @@ void HyperVBalloonAccounting::unhide(UInt32 pageCount) {
   UInt32 hiddenPageCount   = _hiddenPageCount;
   UInt32 unhiddenPageCount = pageCount < hiddenPageCount ? pageCount : hiddenPageCount;
 
+  //
+  // Raise the wired page count last, the reverse of hide().
+  // The user wire limit may have been set through sysctl in the meantime, do not let it wrap.
+  //
   UInt64 byteCount = (UInt64) unhiddenPageCount << PAGE_SHIFT;
-  *_vmPageWireCount += unhiddenPageCount;
-  *_maxMem          += byteCount;
+  *_maxMem += byteCount;
   if (_maxMemActual != nullptr) {
     *_maxMemActual += byteCount;
   }
@@ -199,10 +213,13 @@ void HyperVBalloonAccounting::unhide(UInt32 pageCount) {
   }
   if (_vmGlobalUserWireLimit != nullptr) {
     UInt64 wireLimitBytes = byteCount < _hiddenWireLimitBytes ? byteCount : _hiddenWireLimitBytes;
-    *_vmGlobalUserWireLimit += wireLimitBytes;
-    _hiddenWireLimitBytes   -= wireLimitBytes;
+    UInt64 wireLimit      = *_vmGlobalUserWireLimit;
+    *_vmGlobalUserWireLimit = wireLimit + wireLimitBytes >= wireLimit ? wireLimit + wireLimitBytes : UINT64_MAX;
+    _hiddenWireLimitBytes  -= wireLimitBytes;
   }
-  _hiddenPageCount -= unhiddenPageCount;
+  HyperVCompilerBarrier();
+  *_vmPageWireCount += unhiddenPageCount;
+  _hiddenPageCount  -= unhiddenPageCount;
   lck_mtx_unlock(_vmPageQueueLock);
 
   if (unhiddenPageCount < pageCount) {
