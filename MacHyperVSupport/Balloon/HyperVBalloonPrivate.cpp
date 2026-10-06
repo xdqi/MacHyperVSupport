@@ -11,6 +11,7 @@
 #include <sys/sysctl.h>
 
 #include "HyperVBalloon.hpp"
+#include "HyperVBalloonAccounting.hpp"
 #include "HyperVBalloonRegs.hpp"
 
 bool HyperVBalloon::setupBalloon() {
@@ -121,12 +122,11 @@ void HyperVBalloon::handlePacket(VMBusPacketHeader *pktHeader, UInt32 pktHeaderL
 }
 
 UInt64 HyperVBalloon::getPhysicalMemorySizeInPages() {
-  static UInt64 totalMemorySize = 0;
-  static size_t totalMemorySizeSize = sizeof(totalMemorySize);
-  if (totalMemorySize == 0) {
-    sysctlbyname("hw.memsize", &totalMemorySize, &totalMemorySizeSize, nullptr, 0);
-  }
-  return totalMemorySize / PAGE_SIZE;
+  UInt64 totalMemorySize = 0;
+  size_t totalMemorySizeSize = sizeof(totalMemorySize);
+  sysctlbyname("hw.memsize", &totalMemorySize, &totalMemorySizeSize, nullptr, 0);
+  // Hidden ballooned pages are not part of hw.memsize
+  return totalMemorySize / PAGE_SIZE + HyperVBalloonAccounting::getHiddenPageCount();
 }
 
 //
@@ -209,15 +209,17 @@ void HyperVBalloon::getPagesStatus(UInt64 *committedPages, UInt64 *usingPages) {
   // internal_page_count:   "App Memory"
   // compressor_page_count: "Compressed Memory"
   // active_page_count:     pages that is actively used
+  // Hidden ballooned pages are still wired, but not part of wire_count
+  UInt64 wiredPages = (UInt64) vmStat.wire_count + HyperVBalloonAccounting::getHiddenPageCount();
   if (committedPages) {
 #if defined(__i386__)
-    *committedPages = vmStat.wire_count + vmStat.active_count;
+    *committedPages = wiredPages + vmStat.active_count;
 #elif defined(__x86_64__)
-    *committedPages = vmStat.wire_count + vmStat.internal_page_count + vmStat.compressor_page_count;
+    *committedPages = wiredPages + vmStat.internal_page_count + vmStat.compressor_page_count;
 #endif
   }
   if (usingPages) {
-    *usingPages = vmStat.wire_count + vmStat.active_count
+    *usingPages = wiredPages + vmStat.active_count
 #if defined(__x86_64__)
     + vmStat.compressor_page_count
 #endif
@@ -393,6 +395,7 @@ bool HyperVBalloon::inflateBalloon(UInt32 *pageCount) {
       allocationFailed = true;
       break;
     }
+    chunk->isHidden = HyperVBalloonAccounting::hidePages(chunk->pageCount);
 
     UInt32 rangeIndex = response->inflationResponse.rangeCount;
     response->inflationResponse.ranges[rangeIndex].startPageFrameNumber = chunk->basePageFrameNumber;
@@ -471,13 +474,19 @@ void HyperVBalloon::handleBalloonDeflationRequest(HyperVDynamicMemoryMessageBall
       UInt64 chunkEndPageFrameNumber    = chunk->basePageFrameNumber + chunk->pageCount;
       UInt64 returnedEndPageFrameNumber = endPageFrameNumber < chunkEndPageFrameNumber ? endPageFrameNumber : chunkEndPageFrameNumber;
       // Count every page once, even if the host returns it more than once
+      UInt32 newlyReturnedPageCount = 0;
       for (UInt64 returnedPageFrameNumber = pageFrameNumber; returnedPageFrameNumber < returnedEndPageFrameNumber; ++returnedPageFrameNumber) {
         UInt32 pageIndex = (UInt32) (returnedPageFrameNumber - chunk->basePageFrameNumber);
         UInt64 pageBit   = 1ULL << (pageIndex % 64);
         if ((chunk->returnedPages[pageIndex / 64] & pageBit) == 0) {
           chunk->returnedPages[pageIndex / 64] |= pageBit;
-          ++chunk->returnedPageCount;
+          ++newlyReturnedPageCount;
         }
+      }
+      chunk->returnedPageCount += newlyReturnedPageCount;
+      // Returned pages are backed again and must be counted before the chunk is freed
+      if (chunk->isHidden && newlyReturnedPageCount > 0) {
+        HyperVBalloonAccounting::unhidePages(newlyReturnedPageCount);
       }
       HVDATADBGLOG("Memory blocks %llu-%llu released", pageFrameNumber, returnedEndPageFrameNumber - 1);
 

@@ -22,6 +22,8 @@ typedef struct {
   UInt32                    pageCount;
   UInt32                    returnedPageCount;
   IOBufferMemoryDescriptor  *memoryDescriptor;
+  // Pages not yet returned by the host are hidden from the kernel memory statistics
+  bool                      isHidden;
   // Pages already returned by the host
   UInt64                    returnedPages[kHyperVDynamicMemoryChunkPageCount / 64];
 } HyperVBalloonChunk;
