@@ -268,16 +268,18 @@ HyperVBalloonChunk *HyperVBalloon::allocateChunk(UInt32 pageCount) {
   //
   // Multi-page chunks are physically contiguous and aligned to their size,
   // so each chunk can be reported to the host as a single page range.
+  // kIOMemoryMapperNone is not passed here, it is part of the cache mode mask of buffer descriptors since 10.15.
   //
   IOByteCount  chunkSize = (IOByteCount) pageCount * PAGE_SIZE;
-  IOOptionBits options   = kIOMemoryMapperNone | (pageCount > 1 ? kIOMemoryPhysicallyContiguous : 0);
+  IOOptionBits options   = pageCount > 1 ? kIOMemoryPhysicallyContiguous : 0;
   IOBufferMemoryDescriptor *memoryDescriptor = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, options, chunkSize, chunkSize);
   if (memoryDescriptor == nullptr) {
     return nullptr;
   }
 
+  // The host needs CPU physical addresses, never addresses translated by an IOMMU
   IOByteCount physicalSegmentSize;
-  addr64_t physicalSegmentStart = memoryDescriptor->getPhysicalSegment(0, &physicalSegmentSize, 0);
+  addr64_t physicalSegmentStart = memoryDescriptor->getPhysicalSegment(0, &physicalSegmentSize, kIOMemoryMapperNone);
   HVDATADBGLOG("Allocated %u pages: desc %p, raw 0x%llX, size %llu", pageCount, memoryDescriptor, (UInt64) physicalSegmentStart, (UInt64) physicalSegmentSize);
   if (physicalSegmentSize < chunkSize) {
     HVSYSLOG("Balloon chunk at 0x%llX is not physically contiguous", (UInt64) physicalSegmentStart);
