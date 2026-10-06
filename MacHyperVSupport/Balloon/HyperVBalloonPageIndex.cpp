@@ -42,13 +42,23 @@ void HyperVBalloonPageIndex::freeBuckets() {
 
 void HyperVBalloonPageIndex::grow() {
   //
+  // Grow to the size the number of pages needs at once, the bucket array may have stayed small for many pages.
+  //
+  UInt32 newBucketShift = _bucketShift;
+  while (_buckets != nullptr && newBucketShift < kHyperVBalloonPageIndexMaxBucketShift
+         && _pageCount >= (kHyperVBalloonPageIndexMaxLoadFactor << newBucketShift)) {
+    ++newBucketShift;
+  }
+  if (newBucketShift == _bucketShift) {
+    return;
+  }
+
+  //
   // Allocating the bucket array waits for free pages, which may never come while ballooning under memory pressure.
   // Only grow with enough free pages, otherwise try again after some more pages. Longer chains only make lookups slower.
   //
-  UInt32              newBucketShift = _bucketShift + 1;
-  HyperVKernelPageRef *newBuckets    = nullptr;
-  if (newBucketShift <= kHyperVBalloonPageIndexMaxBucketShift
-      && HyperVBalloonKernelPages::hasFreePages((UInt32) ((sizeof(*newBuckets) << newBucketShift) >> PAGE_SHIFT))) {
+  HyperVKernelPageRef *newBuckets = nullptr;
+  if (HyperVBalloonKernelPages::hasFreePages((UInt32) ((sizeof(*newBuckets) << newBucketShift) >> PAGE_SHIFT))) {
     newBuckets = allocateBuckets(newBucketShift);
   }
   if (newBuckets == nullptr) {

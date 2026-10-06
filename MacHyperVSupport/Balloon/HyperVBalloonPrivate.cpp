@@ -587,6 +587,9 @@ void HyperVBalloon::handleBalloonInflationRequest(HyperVDynamicMemoryMessageBall
   // The grab time limit starts with the first grabbed page of the request
   _grabDeadline = 0;
 
+  // There are the most free pages before grabbing
+  _grabbedPages.grow();
+
   _useLargeChunks = shouldUseLargeChunks();
 
   // The host waits for a final response even if nothing could be ballooned
@@ -681,6 +684,9 @@ void HyperVBalloon::handleBalloonDeflationRequest(HyperVDynamicMemoryMessageBall
       returnedPages = nextPage;
     }
     HVDBGLOG("Released %u grabbed pages", returnedPageCount);
+
+    // The index may have stayed small while there were few free pages
+    _grabbedPages.grow();
   }
 
   // we should send response until the last deflation message received

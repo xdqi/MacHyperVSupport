@@ -29,7 +29,6 @@ private:
   static UInt32 getBucketIndex(ppnum_t pageFrameNumber, UInt32 bucketShift);
   static HyperVKernelPageRef *allocateBuckets(UInt32 bucketShift);
   void freeBuckets();
-  void grow();
 
 public:
   //
@@ -41,6 +40,12 @@ public:
   // Removes and returns the page with the page frame number, nullptr if there is none.
   //
   HyperVKernelPageRef remove(UInt64 pageFrameNumber);
+
+  //
+  // Grows the bucket array to the size the number of pages needs, if there are enough free pages.
+  // Adding pages tries it as well, but there are fewest free pages then, so also call it when free pages are back.
+  //
+  void grow();
 
   UInt32 getCount() const {
     return _pageCount;
