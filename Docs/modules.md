@@ -22,7 +22,7 @@ Disables additional CPUs under macOS 10.4.
 | -hvcpudbg      | Enables debug printing in DEBUG builds
 
 ## Dynamic Memory (HyperVBalloon)
-Provides Dynamic Memory support (memory ballooning). Ballooned memory is hidden from the reported memory size and wired memory on macOS 10.6 and newer. Ballooned memory that cannot be allocated in physically contiguous 2 MB chunks is taken page by page straight from the kernel free page queues on macOS 10.6 and newer, which needs neither kernel address space nor memory descriptors.
+Provides Dynamic Memory support (memory ballooning). Ballooned memory is hidden from the reported memory size and wired memory on macOS 10.6 and newer. Ballooned memory that cannot be allocated in physically contiguous 2 MB chunks is taken page by page straight from the kernel free page queues on macOS 10.6 and newer, which needs neither kernel address space nor memory descriptors. 32-bit kernels take all ballooned memory that way when they can.
 
 | Boot argument  | Description |
 |----------------|-------------|

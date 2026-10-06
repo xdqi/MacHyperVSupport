@@ -53,6 +53,8 @@ private:
   HyperVBalloonPageIndex _grabbedPages;
   // No more pages are grabbed for the current inflation request after this uptime, 0 before its first grabbed page
   UInt64              _grabDeadline                         = 0;
+  // 2 MB chunks are not tried before this uptime after one could not be allocated
+  UInt64              _largeChunkRetryDeadline              = 0;
 
   void handlePacket(VMBusPacketHeader *pktHeader, UInt32 pktHeaderLength, UInt8 *pktData, UInt32 pktDataLength);
   void handleBalloonInflationRequest(HyperVDynamicMemoryMessageBalloonInflationRequest *request);
@@ -64,6 +66,7 @@ private:
   IOReturn sendStatusReport(void*, void*, void*);
   bool inflateBalloon(UInt32 *pageCount);
   bool addGrabbedPage(HyperVDynamicMemoryMessage *response);
+  bool shouldUseLargeChunks();
   HyperVBalloonChunk *allocateChunk(UInt32 pageCount);
   void freeChunk(HyperVBalloonChunk *chunk);
   bool findChunk(UInt64 pageFrameNumber, UInt32 *index);

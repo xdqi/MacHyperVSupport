@@ -382,6 +382,30 @@ void HyperVBalloon::removeChunk(UInt32 index) {
   --_chunkCount;
 }
 
+bool HyperVBalloon::shouldUseLargeChunks() {
+  //
+  // Single page memory descriptors cost far more than searching for a 2 MB chunk, so try one for every request.
+  //
+  if (!HyperVBalloonKernelPages::canGrabPages()) {
+    return true;
+  }
+
+#if defined(__i386__)
+  //
+  // Memory descriptors are mapped into the kernel address space, which is too small for much ballooned memory.
+  //
+  return false;
+#else
+  //
+  // Searching for a 2 MB chunk can take more than a second on fragmented memory, the device work loop
+  // is stalled meanwhile. Grab single pages for a while after it failed.
+  //
+  UInt64 now;
+  clock_get_uptime(&now);
+  return now >= _largeChunkRetryDeadline;
+#endif
+}
+
 bool HyperVBalloon::addGrabbedPage(HyperVDynamicMemoryMessage *response) {
   HyperVKernelPageRef page = HyperVBalloonKernelPages::grabPage();
   if (page == nullptr) {
@@ -475,8 +499,13 @@ bool HyperVBalloon::inflateBalloon(UInt32 *pageCount) {
     HyperVBalloonChunk *chunk = allocateChunk(useLargeChunk ? kHyperVDynamicMemoryChunkPageCount : 1);
     if (chunk == nullptr && useLargeChunk) {
       // Fall back to single pages for the rest of the request, like Linux
-      HVDBGLOG("Failed to allocate a 2 MB balloon chunk, falling back to single pages");
       _useLargeChunks = false;
+      if (canGrabPages) {
+        clock_interval_to_deadline(kHyperVDynamicMemoryLargeChunkRetrySeconds, kSecondScale, &_largeChunkRetryDeadline);
+        HVDBGLOG("Failed to allocate a 2 MB balloon chunk, grabbing single pages for %u seconds", kHyperVDynamicMemoryLargeChunkRetrySeconds);
+      } else {
+        HVDBGLOG("Failed to allocate a 2 MB balloon chunk, falling back to single pages");
+      }
       continue;
     }
     if (chunk == nullptr) {
@@ -558,8 +587,7 @@ void HyperVBalloon::handleBalloonInflationRequest(HyperVDynamicMemoryMessageBall
   // The grab time limit starts with the first grabbed page of the request
   _grabDeadline = 0;
 
-  // Try 2 MB chunks again for every request
-  _useLargeChunks = true;
+  _useLargeChunks = shouldUseLargeChunks();
 
   // The host waits for a final response even if nothing could be ballooned
   bool morePages;

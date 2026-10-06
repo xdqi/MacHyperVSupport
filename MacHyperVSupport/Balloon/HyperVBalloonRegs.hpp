@@ -25,6 +25,9 @@
 // Largest page count of a single page range, which is a 24-bit field
 #define kHyperVDynamicMemoryMaxRangePageCount               ((1U << 24) - 1)
 
+// Once a 2 MB chunk could not be allocated, single pages are grabbed for this long before trying chunks again
+#define kHyperVDynamicMemoryLargeChunkRetrySeconds          30U
+
 // Single pages are grabbed for about this long per inflation request from the first one, the device work loop is blocked meanwhile
 #define kHyperVDynamicMemoryGrabTimeLimitMilliseconds       1000
 
