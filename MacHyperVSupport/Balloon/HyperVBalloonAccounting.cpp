@@ -219,7 +219,12 @@ void HyperVBalloonAccounting::unhide(UInt32 pageCount) {
     *_machineInfoMaxMem += byteCount;
   }
   if (_vmGlobalUserWireLimit != nullptr) {
-    UInt64 wireLimitBytes = byteCount < _hiddenWireLimitBytes ? byteCount : _hiddenWireLimitBytes;
+    //
+    // The user wire limit stops at zero, so it may have been lowered by less than the hidden memory size.
+    // Only raise it by what it was lowered by beyond the memory that stays hidden.
+    //
+    UInt64 hiddenBytes    = (UInt64) (hiddenPageCount - unhiddenPageCount) << PAGE_SHIFT;
+    UInt64 wireLimitBytes = _hiddenWireLimitBytes > hiddenBytes ? _hiddenWireLimitBytes - hiddenBytes : 0;
     UInt64 wireLimit      = *_vmGlobalUserWireLimit;
     *_vmGlobalUserWireLimit = wireLimit + wireLimitBytes >= wireLimit ? wireLimit + wireLimitBytes : UINT64_MAX;
     _hiddenWireLimitBytes  -= wireLimitBytes;
