@@ -14,6 +14,7 @@
 
 #include "HyperVPlatformProvider.hpp"
 #include "HyperVBalloonAccounting.hpp"
+#include "HyperVBalloonKernelPages.hpp"
 
 PluginConfiguration ADDPR(config) {
   xStringify(PRODUCT_NAME),
@@ -30,5 +31,6 @@ PluginConfiguration ADDPR(config) {
   []() {
     HyperVPlatformProvider::getInstance();
     HyperVBalloonAccounting::getInstance();
+    HyperVBalloonKernelPages::getInstance();
   }
 };
