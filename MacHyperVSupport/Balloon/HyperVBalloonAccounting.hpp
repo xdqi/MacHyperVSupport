@@ -19,8 +19,9 @@
 // Provides the kernel memory statistics, which are not exported to kexts.
 //
 // Hides ballooned pages from the kernel memory statistics, like Linux removes them from MemTotal.
-// Ballooned pages stay wired by their memory descriptors, only the kernel counters are adjusted,
-// the same way the kernel itself does not count wired compressor pool pages as wired.
+// Only the kernel counters are adjusted. Pages ballooned through memory descriptors stay wired and are
+// removed from the wired page count, the same way the kernel itself does not count wired compressor pool
+// pages as wired. Pages grabbed from the free page queues are neither wired nor on any page queue, so they are in no page count.
 //
 class HyperVBalloonAccounting {
   HVDeclareLogFunctionsNonIOKit("ball", "HyperVBalloonAccounting");
@@ -53,9 +54,11 @@ private:
 
   //
   // Hidden memory, only changed with the page queue lock held.
+  // Hidden wired pages are the part of the hidden pages that was taken from the wired page count.
   // The user wire limit may be lowered below the hidden memory size, so it is tracked separately.
   //
   UInt32        _hiddenPageCount        = 0;
+  UInt32        _hiddenWiredPageCount   = 0;
   UInt64        _hiddenWireLimitBytes   = 0;
 
   //
@@ -66,8 +69,8 @@ private:
   static mach_vm_address_t solveSymbol(KernelPatcher &patcher, const char *symbol);
   void enableHiding(KernelPatcher &patcher);
 
-  bool hide(UInt32 pageCount);
-  void unhide(UInt32 pageCount);
+  bool hide(UInt32 pageCount, bool isWired);
+  void unhide(UInt32 pageCount, bool isWired);
 
 public:
   //
@@ -98,23 +101,28 @@ public:
   }
 
   //
-  // Hides wired pages from the kernel memory statistics, returns false if they are still counted.
+  // Hides ballooned pages from the kernel memory statistics, returns false if they are still counted.
+  // Wired pages are also taken from the wired page count.
   //
-  static bool hidePages(UInt32 pageCount) {
-    return _instance != nullptr && _instance->hide(pageCount);
+  static bool hidePages(UInt32 pageCount, bool isWired) {
+    return _instance != nullptr && _instance->hide(pageCount, isWired);
   }
 
   //
-  // Counts previously hidden pages again, must be called before the pages are unwired.
+  // Counts previously hidden pages again, must be called before the pages are unwired or released.
   //
-  static void unhidePages(UInt32 pageCount) {
+  static void unhidePages(UInt32 pageCount, bool isWired) {
     if (_instance != nullptr) {
-      _instance->unhide(pageCount);
+      _instance->unhide(pageCount, isWired);
     }
   }
 
   static UInt32 getHiddenPageCount() {
     return _instance != nullptr ? _instance->_hiddenPageCount : 0;
+  }
+
+  static UInt32 getHiddenWiredPageCount() {
+    return _instance != nullptr ? _instance->_hiddenWiredPageCount : 0;
   }
 };
 

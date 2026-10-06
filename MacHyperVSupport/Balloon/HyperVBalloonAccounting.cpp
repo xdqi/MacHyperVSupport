@@ -152,7 +152,7 @@ kern_return_t HyperVBalloonAccounting::getVMStatistics(vm_statistics64_t statist
 }
 #endif
 
-bool HyperVBalloonAccounting::hide(UInt32 pageCount) {
+bool HyperVBalloonAccounting::hide(UInt32 pageCount, bool isWired) {
   if (!_isEnabled) {
     return false;
   }
@@ -162,15 +162,18 @@ bool HyperVBalloonAccounting::hide(UInt32 pageCount) {
 
   //
   // The kernel only changes the wired page count with the page queue lock held.
-  // The pages are wired and thus already counted, the check only guards against kernel accounting changes.
+  // Wired pages are already counted, the check only guards against kernel accounting changes.
   //
   // Readers compare the wired page count against the memory size and the user wire limit without the lock.
-  // Lower the wired page count first, so they never see less memory available than there is.
+  // For wired pages, lower the wired page count first, so they never see less memory available than there is.
+  // Unwired pages have already left the free page queues, so lowering the memory size only makes it accurate.
   //
   lck_mtx_lock(_vmPageQueueLock);
-  if (*_vmPageWireCount >= pageCount && *_maxMem > byteCount) {
-    *_vmPageWireCount -= pageCount;
-    HyperVCompilerBarrier();
+  if ((!isWired || *_vmPageWireCount >= pageCount) && *_maxMem > byteCount) {
+    if (isWired) {
+      *_vmPageWireCount -= pageCount;
+      HyperVCompilerBarrier();
+    }
     *_maxMem          -= byteCount;
     if (_maxMemActual != nullptr) {
       *_maxMemActual -= byteCount;
@@ -184,17 +187,20 @@ bool HyperVBalloonAccounting::hide(UInt32 pageCount) {
       _hiddenWireLimitBytes   += wireLimitBytes;
     }
     _hiddenPageCount += pageCount;
+    if (isWired) {
+      _hiddenWiredPageCount += pageCount;
+    }
     isHidden = true;
   }
   lck_mtx_unlock(_vmPageQueueLock);
 
   if (!isHidden) {
-    HVSYSLOG("Failed to hide %u pages", pageCount);
+    HVSYSLOG("Failed to hide %u %s pages", pageCount, isWired ? "wired" : "unwired");
   }
   return isHidden;
 }
 
-void HyperVBalloonAccounting::unhide(UInt32 pageCount) {
+void HyperVBalloonAccounting::unhide(UInt32 pageCount, bool isWired) {
   if (!_isEnabled) {
     return;
   }
@@ -203,8 +209,10 @@ void HyperVBalloonAccounting::unhide(UInt32 pageCount) {
   // Nothing may be logged with the page queue lock held, logging can allocate memory.
   //
   lck_mtx_lock(_vmPageQueueLock);
-  UInt32 hiddenPageCount   = _hiddenPageCount;
-  UInt32 unhiddenPageCount = pageCount < hiddenPageCount ? pageCount : hiddenPageCount;
+  UInt32 hiddenPageCount     = _hiddenPageCount;
+  // Clamp to hidden pages of the same kind, so the wired page count is only raised by what hide() took from it
+  UInt32 hiddenKindPageCount = isWired ? _hiddenWiredPageCount : hiddenPageCount - _hiddenWiredPageCount;
+  UInt32 unhiddenPageCount   = pageCount < hiddenKindPageCount ? pageCount : hiddenKindPageCount;
 
   //
   // Raise the wired page count last, the reverse of hide().
@@ -230,11 +238,14 @@ void HyperVBalloonAccounting::unhide(UInt32 pageCount) {
     _hiddenWireLimitBytes  -= wireLimitBytes;
   }
   HyperVCompilerBarrier();
-  *_vmPageWireCount += unhiddenPageCount;
-  _hiddenPageCount  -= unhiddenPageCount;
+  if (isWired) {
+    *_vmPageWireCount     += unhiddenPageCount;
+    _hiddenWiredPageCount -= unhiddenPageCount;
+  }
+  _hiddenPageCount -= unhiddenPageCount;
   lck_mtx_unlock(_vmPageQueueLock);
 
   if (unhiddenPageCount < pageCount) {
-    HVSYSLOG("Unhiding %u pages, but only %u pages were hidden", pageCount, hiddenPageCount);
+    HVSYSLOG("Unhiding %u %s pages, but only %u were hidden", pageCount, isWired ? "wired" : "unwired", hiddenKindPageCount);
   }
 }

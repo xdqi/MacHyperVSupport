@@ -221,8 +221,8 @@ bool HyperVBalloon::getPagesStatus(UInt64 *committedPages, UInt64 *usingPages) {
   // active_count:          pages that are actively used, both anonymous and file-backed
   // internal_page_count:   "App Memory", anonymous pages
   // compressor_page_count: "Compressed Memory"
-  // Hidden ballooned pages are still wired, but not part of wire_count
-  UInt64 wiredPages = (UInt64) vmStat.wire_count + HyperVBalloonAccounting::getHiddenPageCount();
+  // Hidden ballooned memory descriptor pages are still wired, but not part of wire_count
+  UInt64 wiredPages = (UInt64) vmStat.wire_count + HyperVBalloonAccounting::getHiddenWiredPageCount();
   UInt64 used       = wiredPages + vmStat.active_count;
 
   //
@@ -420,7 +420,7 @@ bool HyperVBalloon::inflateBalloon(UInt32 *pageCount) {
       allocationFailed = true;
       break;
     }
-    chunk->isHidden = HyperVBalloonAccounting::hidePages(chunk->pageCount);
+    chunk->isHidden = HyperVBalloonAccounting::hidePages(chunk->pageCount, true);
 
     UInt32 rangeIndex = response->inflationResponse.rangeCount;
     response->inflationResponse.ranges[rangeIndex].startPageFrameNumber = chunk->basePageFrameNumber;
@@ -516,7 +516,7 @@ void HyperVBalloon::handleBalloonDeflationRequest(HyperVDynamicMemoryMessageBall
       chunk->returnedPageCount += newlyReturnedPageCount;
       // Returned pages are backed again and must be counted before the chunk is freed
       if (chunk->isHidden && newlyReturnedPageCount > 0) {
-        HyperVBalloonAccounting::unhidePages(newlyReturnedPageCount);
+        HyperVBalloonAccounting::unhidePages(newlyReturnedPageCount, true);
       }
       HVDATADBGLOG("Memory blocks %llu-%llu released", pageFrameNumber, returnedEndPageFrameNumber - 1);
 
