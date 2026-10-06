@@ -201,7 +201,6 @@ IOReturn HyperVBalloon::sendStatusReport(void*, void*, void*) {
 bool HyperVBalloon::getPagesStatus(UInt64 *committedPages, UInt64 *usingPages) {
   //
   // Called from both the status report timer and the VMBus packet handler, so the buffer must be local.
-  // Fields the kernel does not fill stay zero.
   //
   mach_msg_type_number_t vmStatSize;
 #if defined(__i386__)
@@ -219,24 +218,34 @@ bool HyperVBalloon::getPagesStatus(UInt64 *committedPages, UInt64 *usingPages) {
   }
 
   // wire_count:            "Wired Memory", pages that cannot be swapped out, e.g. kernel memory
-  // internal_page_count:   "App Memory"
+  // active_count:          pages that are actively used, both anonymous and file-backed
+  // internal_page_count:   "App Memory", anonymous pages
   // compressor_page_count: "Compressed Memory"
-  // active_page_count:     pages that is actively used
   // Hidden ballooned pages are still wired, but not part of wire_count
   UInt64 wiredPages = (UInt64) vmStat.wire_count + HyperVBalloonAccounting::getHiddenPageCount();
-  if (committedPages) {
-#if defined(__i386__)
-    *committedPages = wiredPages + vmStat.active_count;
-#elif defined(__x86_64__)
-    *committedPages = wiredPages + vmStat.internal_page_count + vmStat.compressor_page_count;
-#endif
-  }
-  if (usingPages) {
-    *usingPages = wiredPages + vmStat.active_count
+  UInt64 used       = wiredPages + vmStat.active_count;
+
+  //
+  // 32-bit kernels and 64-bit kernels before 10.9 have no compressor and do not report anonymous pages,
+  // so count active pages as committed there. Inactive pages are reclaimed under memory pressure,
+  // file-backed pages are dropped and anonymous pages are paged out to swap. Anonymous pages that
+  // cannot be paged out without swap are already part of wire_count. Counting inactive pages would
+  // also count the file cache, which grows into all free memory, and the host would never balloon.
+  //
+  UInt64 committed  = used;
 #if defined(__x86_64__)
-    + vmStat.compressor_page_count
+  // Older kernels only fill the fields before the compressor statistics and return a smaller count
+  if (vmStatSize >= HOST_VM_INFO64_REV1_COUNT) {
+    committed = wiredPages + vmStat.internal_page_count + vmStat.compressor_page_count;
+    used     += vmStat.compressor_page_count;
+  }
 #endif
-    ;
+
+  if (committedPages != nullptr) {
+    *committedPages = committed;
+  }
+  if (usingPages != nullptr) {
+    *usingPages = used;
   }
   return true;
 }
