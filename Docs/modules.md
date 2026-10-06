@@ -21,6 +21,17 @@ Disables additional CPUs under macOS 10.4.
 |----------------|-------------|
 | -hvcpudbg      | Enables debug printing in DEBUG builds
 
+## Dynamic Memory (HyperVBalloon)
+Provides Dynamic Memory support (memory ballooning). Ballooned memory is hidden from the reported memory size and wired memory on macOS 10.6 and newer.
+
+| Boot argument  | Description |
+|----------------|-------------|
+| -hvballdbg     | Enables debug printing in DEBUG builds
+| -hvballdatadbg | Enables debug printing of per-page and status report data in DEBUG builds
+| -hvballmsgdbg  | Enables debug printing of message data in DEBUG builds
+| -hvballnohide  | Reports ballooned memory as wired memory instead of hiding it
+| -hvballoff     | Disables this module
+
 ## File Copy (HyperVFileCopy)
 Provides host to guest file copy support (Guest Services). Requires the `hvfilecopyd` userspace daemon to be running.
 
