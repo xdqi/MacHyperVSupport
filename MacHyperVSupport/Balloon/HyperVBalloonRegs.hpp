@@ -2,7 +2,7 @@
 //  HyperVBalloonRegs.hpp
 //  Hyper-V balloon driver constants and structures
 //
-//  Copyright © 2022-2023 xdqi. All rights reserved.
+//  Copyright © 2022-2026 xdqi. All rights reserved.
 //
 
 #ifndef HyperVBalloonRegs_hpp

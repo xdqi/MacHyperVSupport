@@ -2,7 +2,7 @@
 //  HyperVBalloon.hpp
 //  Hyper-V balloon driver interface
 //
-//  Copyright © 2022-2023 xdqi. All rights reserved.
+//  Copyright © 2022-2026 xdqi. All rights reserved.
 //
 
 #ifndef HyperVBalloon_hpp
