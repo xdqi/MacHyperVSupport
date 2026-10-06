@@ -13,6 +13,7 @@
 #include <Headers/kern_api.hpp>
 
 #include "HyperVPlatformProvider.hpp"
+#include "HyperVBalloonAccounting.hpp"
 
 PluginConfiguration ADDPR(config) {
   xStringify(PRODUCT_NAME),
@@ -28,5 +29,6 @@ PluginConfiguration ADDPR(config) {
   KernelVersion::Tahoe,
   []() {
     HyperVPlatformProvider::getInstance();
+    HyperVBalloonAccounting::getInstance();
   }
 };
