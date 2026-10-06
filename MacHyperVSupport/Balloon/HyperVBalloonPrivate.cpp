@@ -7,6 +7,7 @@
 
 #include <string.h>
 #include <mach/vm_statistics.h>
+#include <kern/clock.h>
 #include <sys/sysctl.h>
 
 #include "HyperVBalloon.hpp"
@@ -381,6 +382,46 @@ void HyperVBalloon::removeChunk(UInt32 index) {
   --_chunkCount;
 }
 
+bool HyperVBalloon::addGrabbedPage(HyperVDynamicMemoryMessage *response) {
+  HyperVKernelPageRef page = HyperVBalloonKernelPages::grabPage();
+  if (page == nullptr) {
+    HVDBGLOG("Failed to grab balloon page");
+    return false;
+  }
+  if (!_grabbedPages.insert(page)) {
+    // Not reported to the host yet, so it can be handed back to the kernel
+    HVSYSLOG("Failed to track grabbed balloon page");
+    HyperVBalloonKernelPages::releasePage(page);
+    return false;
+  }
+
+  //
+  // Pages come off the free page queues in no particular order, extend the last range if they are adjacent.
+  //
+  UInt64 pageFrameNumber = HyperVBalloonKernelPages::getPageFrameNumber(page);
+  UInt32 rangeCount      = response->inflationResponse.rangeCount;
+  HVDATADBGLOG("Grabbed page %llu", pageFrameNumber);
+  if (rangeCount > 0 && response->inflationResponse.ranges[rangeCount - 1].pageCount < kHyperVDynamicMemoryMaxRangePageCount) {
+    UInt64 lastStartPageFrameNumber = response->inflationResponse.ranges[rangeCount - 1].startPageFrameNumber;
+    UInt32 lastPageCount            = response->inflationResponse.ranges[rangeCount - 1].pageCount;
+    if (pageFrameNumber == lastStartPageFrameNumber + lastPageCount) {
+      response->inflationResponse.ranges[rangeCount - 1].pageCount = lastPageCount + 1;
+      return true;
+    }
+    if (pageFrameNumber + 1 == lastStartPageFrameNumber) {
+      response->inflationResponse.ranges[rangeCount - 1].startPageFrameNumber = pageFrameNumber;
+      response->inflationResponse.ranges[rangeCount - 1].pageCount            = lastPageCount + 1;
+      return true;
+    }
+  }
+
+  // The caller leaves room for another page range
+  response->inflationResponse.ranges[rangeCount].startPageFrameNumber = pageFrameNumber;
+  response->inflationResponse.ranges[rangeCount].pageCount            = 1;
+  response->inflationResponse.rangeCount                              = rangeCount + 1;
+  return true;
+}
+
 bool HyperVBalloon::inflateBalloon(UInt32 *pageCount) {
   HVDBGLOG("This time inflate up to %u pages", *pageCount);
 
@@ -394,17 +435,45 @@ bool HyperVBalloon::inflateBalloon(UInt32 *pageCount) {
   response->inflationResponse.rangeCount = 0;
 
   //
-  // Each ballooned chunk is reported as its own page range, 2 MB chunks are used when possible.
+  // Ballooned memory is reported as page ranges, 2 MB chunks are used when possible.
   // The host may return arbitrary parts of a chunk, it is freed once all of its pages are returned.
+  // Single pages are grabbed from the kernel free page queues when possible and returned one by one,
+  // adjacent ones share a page range, also with a chunk.
   //
   UInt32 balloonedPageCount = 0;
+  UInt32 grabbedPageCount   = 0;
   bool   allocationFailed   = false;
+  bool   canGrabPages       = HyperVBalloonKernelPages::canGrabPages();
   while (balloonedPageCount < *pageCount && response->inflationResponse.rangeCount < kHyperVDynamicMemoryInflationMaxRangeCount) {
     UInt32 remainingPageCount = *pageCount - balloonedPageCount;
-    UInt32 chunkPageCount     = (_useLargeChunks && remainingPageCount >= kHyperVDynamicMemoryChunkPageCount) ? kHyperVDynamicMemoryChunkPageCount : 1;
+    bool   useLargeChunk      = _useLargeChunks && remainingPageCount >= kHyperVDynamicMemoryChunkPageCount;
 
-    HyperVBalloonChunk *chunk = allocateChunk(chunkPageCount);
-    if (chunk == nullptr && chunkPageCount > 1) {
+    if (!useLargeChunk && canGrabPages) {
+      //
+      // Grabbing waits for the pageout daemon when memory is low, deflation requests and status reports
+      // must not be blocked for long. Stop after a while, the host asks for the rest again.
+      // The time limit starts with the first grabbed page, so 2 MB chunks that could not be allocated do not use it up.
+      //
+      UInt64 now;
+      clock_get_uptime(&now);
+      if (_grabDeadline == 0) {
+        clock_interval_to_deadline(kHyperVDynamicMemoryGrabTimeLimitMilliseconds, kMillisecondScale, &_grabDeadline);
+      } else if (now >= _grabDeadline) {
+        HVDBGLOG("Grabbing pages took too long, stopping this request");
+        allocationFailed = true;
+        break;
+      }
+      if (!addGrabbedPage(response)) {
+        allocationFailed = true;
+        break;
+      }
+      ++balloonedPageCount;
+      ++grabbedPageCount;
+      continue;
+    }
+
+    HyperVBalloonChunk *chunk = allocateChunk(useLargeChunk ? kHyperVDynamicMemoryChunkPageCount : 1);
+    if (chunk == nullptr && useLargeChunk) {
       // Fall back to single pages for the rest of the request, like Linux
       HVDBGLOG("Failed to allocate a 2 MB balloon chunk, falling back to single pages");
       _useLargeChunks = false;
@@ -429,6 +498,14 @@ bool HyperVBalloon::inflateBalloon(UInt32 *pageCount) {
     response->inflationResponse.ranges[rangeIndex].pageCount            = chunk->pageCount;
     ++response->inflationResponse.rangeCount;
     balloonedPageCount += chunk->pageCount;
+  }
+
+  //
+  // Grabbed pages are not wired, they are hidden for each response. Hiding is set up before any page is
+  // ballooned, so grabbed pages are hidden unless hiding is off or fails, unhiding them is clamped then.
+  //
+  if (grabbedPageCount > 0) {
+    HyperVBalloonAccounting::hidePages(grabbedPageCount, false);
   }
 
   // Stop inflating if the request could not be fully satisfied
@@ -477,6 +554,9 @@ void HyperVBalloon::handleBalloonInflationRequest(HyperVDynamicMemoryMessageBall
       pageCount = availablePages > floorPages ? (UInt32) (availablePages - floorPages) : 0;
     }
   }
+
+  // The grab time limit starts with the first grabbed page of the request
+  _grabDeadline = 0;
 
   // Try 2 MB chunks again for every request
   _useLargeChunks = true;

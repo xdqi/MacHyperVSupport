@@ -22,6 +22,12 @@
 // Initial number of ballooned chunks that can be tracked, grows as needed
 #define kHyperVDynamicMemoryInitialChunkCapacity            1024
 
+// Largest page count of a single page range, which is a 24-bit field
+#define kHyperVDynamicMemoryMaxRangePageCount               ((1U << 24) - 1)
+
+// Single pages are grabbed for about this long per inflation request from the first one, the device work loop is blocked meanwhile
+#define kHyperVDynamicMemoryGrabTimeLimitMilliseconds       1000
+
 //
 // Dynamic memory protocol versions (major in high word, minor in low word).
 // Current dynamic memory protocol is 2.0 (Windows 10).
