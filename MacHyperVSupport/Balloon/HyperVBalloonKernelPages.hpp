@@ -55,11 +55,22 @@ private:
   bool                  _canGrab     = false;
 
   //
+  // Page array of 10.6 kernels without page accessors, whose page fields are accessed directly.
+  //
+  UInt8                 *_snowLeopardPages     = nullptr;
+  UInt32                _snowLeopardPageCount  = 0;
+  bool                  _usesSnowLeopardLayout = false;
+
+  //
   // Initialization function.
   //
   void init();
   void onLiluPatcherLoad(KernelPatcher &patcher);
   static mach_vm_address_t solveSymbol(KernelPatcher &patcher, const char *symbol);
+  bool useSnowLeopardLayout(KernelPatcher &patcher);
+  ppnum_t getSnowLeopardArrayPhysPage(UInt32 index);
+  bool findSnowLeopardArrayPhysPage(ppnum_t physPage);
+  bool isSnowLeopardFreePage(HyperVKernelPageRef page);
 
   HyperVKernelPageRef grab();
   ppnum_t getPhysPage(HyperVKernelPageRef page);
