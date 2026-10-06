@@ -58,7 +58,7 @@ private:
 
   void handlePacket(VMBusPacketHeader *pktHeader, UInt32 pktHeaderLength, UInt8 *pktData, UInt32 pktDataLength);
   void handleBalloonInflationRequest(HyperVDynamicMemoryMessageBalloonInflationRequest *request);
-  void handleBalloonDeflationRequest(HyperVDynamicMemoryMessageBalloonDeflationRequest *request);
+  void handleBalloonDeflationRequest(HyperVDynamicMemoryMessageBalloonDeflationRequest *request, UInt32 messageLength);
   void handleHotAddRequest(HyperVDynamicMemoryMessageHotAddRequest *request);
   void handleInformationMessage(HyperVDynamicMemoryMessageInformation *info);
   bool setupBalloon();

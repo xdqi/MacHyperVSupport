@@ -105,7 +105,7 @@ void HyperVBalloon::handlePacket(VMBusPacketHeader *pktHeader, UInt32 pktHeaderL
       break;
 
     case kDynamicMemoryMessageTypeBalloonDeflationRequest:
-      handleBalloonDeflationRequest(&balloonMessage->deflationRequest);
+      handleBalloonDeflationRequest(&balloonMessage->deflationRequest, pktDataLength);
       break;
 
     case kDynamicMemoryMessageTypeHotAddRequest:
@@ -596,14 +596,27 @@ void HyperVBalloon::handleBalloonInflationRequest(HyperVDynamicMemoryMessageBall
   } while (morePages);
 }
 
-void HyperVBalloon::handleBalloonDeflationRequest(HyperVDynamicMemoryMessageBalloonDeflationRequest *request) {
+void HyperVBalloon::handleBalloonDeflationRequest(HyperVDynamicMemoryMessageBalloonDeflationRequest *request, UInt32 messageLength) {
   // Grabbed pages returned by the host, linked through their offset field
   HyperVKernelPageRef returnedPages     = nullptr;
   UInt32              returnedPageCount = 0;
 
-  for (UInt32 i = 0; i < request->rangeCount; ++i) {
-    UInt64 pageFrameNumber    = request->ranges[i].startPageFrameNumber;
-    UInt64 endPageFrameNumber = pageFrameNumber + request->ranges[i].pageCount;
+  //
+  // Only use the ranges the packet holds, the rest of the receive buffer holds earlier messages.
+  //
+  UInt32 rangeCount    = request->rangeCount;
+  UInt32 rangesOffset  = sizeof(HyperVDynamicMemoryMessageHeader) + sizeof(HyperVDynamicMemoryMessageBalloonDeflationRequest);
+  UInt32 maxRangeCount = messageLength > rangesOffset ? (messageLength - rangesOffset) / sizeof(HyperVDynamicMemoryPageRange) : 0;
+  if (rangeCount > maxRangeCount) {
+    HVSYSLOG("Deflation request has %u page ranges, but its packet only holds %u", rangeCount, maxRangeCount);
+    rangeCount = maxRangeCount;
+  }
+
+  for (UInt32 i = 0; i < rangeCount; ++i) {
+    UInt64 startPageFrameNumber = request->ranges[i].startPageFrameNumber;
+    UInt64 pageFrameNumber      = startPageFrameNumber;
+    UInt64 endPageFrameNumber   = pageFrameNumber + request->ranges[i].pageCount;
+    UInt32 notFoundPageCount    = 0;
 
     while (pageFrameNumber < endPageFrameNumber) {
       UInt32 index;
@@ -615,7 +628,7 @@ void HyperVBalloon::handleBalloonDeflationRequest(HyperVDynamicMemoryMessageBall
           ++returnedPageCount;
           HVDATADBGLOG("Memory block %llu released", pageFrameNumber);
         } else {
-          HVSYSLOG("Memory block %llu not found", pageFrameNumber);
+          ++notFoundPageCount;
         }
         ++pageFrameNumber;
         continue;
@@ -647,6 +660,11 @@ void HyperVBalloon::handleBalloonDeflationRequest(HyperVDynamicMemoryMessageBall
         freeChunk(chunk);
       }
       pageFrameNumber = returnedEndPageFrameNumber;
+    }
+
+    // Log once per range, the host may return large ranges
+    if (notFoundPageCount > 0) {
+      HVSYSLOG("%u pages of memory blocks %llu-%llu not found", notFoundPageCount, startPageFrameNumber, endPageFrameNumber - 1);
     }
   }
 
