@@ -146,5 +146,10 @@ void HyperVBalloon::stop(IOService *provider) {
   _chunkCount    = 0;
   _chunkCapacity = 0;
 
+  // Grabbed pages still ballooned out are leaked for the same reason, together with their index
+  if (_grabbedPages.getCount() != 0) {
+    HVSYSLOG("Leaking %u grabbed pages", _grabbedPages.getCount());
+  }
+
   super::stop(provider);
 }

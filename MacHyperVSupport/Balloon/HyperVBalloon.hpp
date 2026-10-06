@@ -13,6 +13,7 @@
 
 #include "HyperVVMBusDevice.hpp"
 #include "HyperVBalloonRegs.hpp"
+#include "HyperVBalloonPageIndex.hpp"
 
 //
 // Ballooned memory allocation, a physically contiguous run of pages reported to the host as one page range.
@@ -48,6 +49,9 @@ private:
   UInt32              _chunkCapacity                        = 0;
   bool                _useLargeChunks                       = true;
 
+  // Ballooned pages grabbed from the kernel free page queues
+  HyperVBalloonPageIndex _grabbedPages;
+
   void handlePacket(VMBusPacketHeader *pktHeader, UInt32 pktHeaderLength, UInt8 *pktData, UInt32 pktDataLength);
   void handleBalloonInflationRequest(HyperVDynamicMemoryMessageBalloonInflationRequest *request);
   void handleBalloonDeflationRequest(HyperVDynamicMemoryMessageBalloonDeflationRequest *request);
@@ -64,7 +68,7 @@ private:
   void removeChunk(UInt32 index);
   static UInt64 getPhysicalMemorySizeInPages();
   static UInt64 getBalloonFloorPageCount();
-  static bool getPagesStatus(UInt64 *committedPages, UInt64 *usingPages);
+  bool getPagesStatus(UInt64 *committedPages, UInt64 *usingPages);
 
 public:
   virtual bool start(IOService* provider) APPLE_KEXT_OVERRIDE;

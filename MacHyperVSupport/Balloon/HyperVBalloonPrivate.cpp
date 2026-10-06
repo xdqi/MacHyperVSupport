@@ -11,6 +11,7 @@
 
 #include "HyperVBalloon.hpp"
 #include "HyperVBalloonAccounting.hpp"
+#include "HyperVBalloonKernelPages.hpp"
 #include "HyperVBalloonRegs.hpp"
 
 bool HyperVBalloon::setupBalloon() {
@@ -185,8 +186,8 @@ IOReturn HyperVBalloon::sendStatusReport(void*, void*, void*) {
   // Clamp to zero, a wrapped value would make the host balloon out even more memory
   message.statusReport.availablePages = totalPages > usingPages ? totalPages - usingPages : 0;
   //
-  // The host computes memory pressure from committed memory only. Ballooned pages are wired and thus
-  // already committed, like Linux also report the floor as committed so the host leaves it to the guest.
+  // The host computes memory pressure from committed memory only. Ballooned pages are counted as wired
+  // and thus committed, like Linux also reports the floor as committed so the host leaves it to the guest.
   //
   message.statusReport.committedPages = committedPages + getBalloonFloorPageCount();
 
@@ -221,8 +222,9 @@ bool HyperVBalloon::getPagesStatus(UInt64 *committedPages, UInt64 *usingPages) {
   // active_count:          pages that are actively used, both anonymous and file-backed
   // internal_page_count:   "App Memory", anonymous pages
   // compressor_page_count: "Compressed Memory"
-  // Hidden ballooned memory descriptor pages are still wired, but not part of wire_count
-  UInt64 wiredPages = (UInt64) vmStat.wire_count + HyperVBalloonAccounting::getHiddenWiredPageCount();
+  // Hidden ballooned memory descriptor pages are still wired, but not part of wire_count.
+  // Grabbed ballooned pages are never part of wire_count, whether hidden or not.
+  UInt64 wiredPages = (UInt64) vmStat.wire_count + HyperVBalloonAccounting::getHiddenWiredPageCount() + _grabbedPages.getCount();
   UInt64 used       = wiredPages + vmStat.active_count;
 
   //
@@ -487,6 +489,10 @@ void HyperVBalloon::handleBalloonInflationRequest(HyperVDynamicMemoryMessageBall
 }
 
 void HyperVBalloon::handleBalloonDeflationRequest(HyperVDynamicMemoryMessageBalloonDeflationRequest *request) {
+  // Grabbed pages returned by the host, linked through their offset field
+  HyperVKernelPageRef returnedPages     = nullptr;
+  UInt32              returnedPageCount = 0;
+
   for (UInt32 i = 0; i < request->rangeCount; ++i) {
     UInt64 pageFrameNumber    = request->ranges[i].startPageFrameNumber;
     UInt64 endPageFrameNumber = pageFrameNumber + request->ranges[i].pageCount;
@@ -494,7 +500,15 @@ void HyperVBalloon::handleBalloonDeflationRequest(HyperVDynamicMemoryMessageBall
     while (pageFrameNumber < endPageFrameNumber) {
       UInt32 index;
       if (!findChunk(pageFrameNumber, &index)) {
-        HVSYSLOG("Memory block %llu not found", pageFrameNumber);
+        HyperVKernelPageRef page = _grabbedPages.remove(pageFrameNumber);
+        if (page != nullptr) {
+          HyperVBalloonKernelPages::setLink(page, returnedPages);
+          returnedPages = page;
+          ++returnedPageCount;
+          HVDATADBGLOG("Memory block %llu released", pageFrameNumber);
+        } else {
+          HVSYSLOG("Memory block %llu not found", pageFrameNumber);
+        }
         ++pageFrameNumber;
         continue;
       }
@@ -526,6 +540,21 @@ void HyperVBalloon::handleBalloonDeflationRequest(HyperVDynamicMemoryMessageBall
       }
       pageFrameNumber = returnedEndPageFrameNumber;
     }
+  }
+
+  //
+  // Returned pages are backed again and must be counted before the kernel can use them.
+  // Grabbed pages are either all hidden or none, see inflateBalloon().
+  // Released outside of the page queue lock, which vm_page_release() must not be called with.
+  //
+  if (returnedPageCount > 0) {
+    HyperVBalloonAccounting::unhidePages(returnedPageCount, false);
+    while (returnedPages != nullptr) {
+      HyperVKernelPageRef nextPage = HyperVBalloonKernelPages::getLink(returnedPages);
+      HyperVBalloonKernelPages::releasePage(returnedPages);
+      returnedPages = nextPage;
+    }
+    HVDBGLOG("Released %u grabbed pages", returnedPageCount);
   }
 
   // we should send response until the last deflation message received
