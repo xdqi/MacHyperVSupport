@@ -191,18 +191,22 @@ IOReturn HyperVBalloon::sendStatusReport(void*, void*, void*) {
 }
 
 void HyperVBalloon::getPagesStatus(UInt64 *committedPages, UInt64 *usingPages) {
-  static mach_msg_type_name_t vmStatSize;
+  //
+  // Called from both the status report timer and the VMBus packet handler, so the buffer must be local.
+  // Fields the kernel does not fill, and all fields on failure, stay zero.
+  //
+  mach_msg_type_number_t vmStatSize;
 #if defined(__i386__)
-  static vm_statistics_data_t vmStat;
+  vm_statistics_data_t vmStat;
   vmStatSize = HOST_VM_INFO_COUNT;
-  HyperVBalloonAccounting::getVMStatistics(&vmStat, &vmStatSize);
 #elif defined(__x86_64__)
-  static vm_statistics64_data_t vmStat;
+  vm_statistics64_data_t vmStat;
   vmStatSize = HOST_VM_INFO64_COUNT;
-  HyperVBalloonAccounting::getVMStatistics(&vmStat, &vmStatSize);
 #else
 #error Unsupported arch
 #endif
+  bzero(&vmStat, sizeof(vmStat));
+  HyperVBalloonAccounting::getVMStatistics(&vmStat, &vmStatSize);
 
   // wire_count:            "Wired Memory", pages that cannot be swapped out, e.g. kernel memory
   // internal_page_count:   "App Memory"
