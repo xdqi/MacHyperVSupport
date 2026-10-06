@@ -80,8 +80,10 @@ void HyperVBalloonKernelPages::onLiluPatcherLoad(KernelPatcher &patcher) {
   if (_grab == nullptr) {
     _grab = reinterpret_cast<GrabFunction>(solveSymbol(patcher, "_vm_page_grab"));
   }
-  _release = reinterpret_cast<ReleaseFunction>(solveSymbol(patcher, "_vm_page_release"));
-  if (_grab == nullptr || _release == nullptr) {
+  _release    = reinterpret_cast<ReleaseFunction>(solveSymbol(patcher, "_vm_page_release"));
+  _freeCount  = reinterpret_cast<volatile unsigned int *>(solveSymbol(patcher, "_vm_page_free_count"));
+  _freeTarget = reinterpret_cast<volatile unsigned int *>(solveSymbol(patcher, "_vm_page_free_target"));
+  if (_grab == nullptr || _release == nullptr || _freeCount == nullptr || _freeTarget == nullptr) {
     HVSYSLOG("Failed to resolve kernel page functions, ballooned pages are not grabbed");
     return;
   }

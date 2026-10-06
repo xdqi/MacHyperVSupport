@@ -51,6 +51,8 @@ private:
   GetPhysPageFunction   _getPhysPage = nullptr;
   SetOffsetFunction     _setOffset   = nullptr;
   GetOffsetFunction     _getOffset   = nullptr;
+  volatile unsigned int *_freeCount  = nullptr;
+  volatile unsigned int *_freeTarget = nullptr;
 
   bool                  _canGrab     = false;
 
@@ -97,6 +99,14 @@ public:
   //
   static bool canGrabPages() {
     return _instance != nullptr && _instance->_canGrab;
+  }
+
+  //
+  // Returns true if allocating the number of pages leaves more free pages than the kernel targets,
+  // so the allocation does not have to wait for the pageout daemon. Only valid once pages can be grabbed.
+  //
+  static bool hasFreePages(UInt32 pageCount) {
+    return *_instance->_freeCount > *_instance->_freeTarget + pageCount;
   }
 
   //
