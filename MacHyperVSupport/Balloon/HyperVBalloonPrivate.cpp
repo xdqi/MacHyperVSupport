@@ -165,9 +165,10 @@ UInt64 HyperVBalloon::getBalloonFloorPageCount() {
 IOReturn HyperVBalloon::sendStatusReport(void*, void*, void*) {
   //
   // The kernel memory statistics are resolved through Lilu, which may happen after this driver started.
-  // Do not report anything until then, the host does not balloon without status reports.
+  // Do not report anything without them, the host does not balloon without status reports.
   //
-  if (!HyperVBalloonAccounting::canGetVMStatistics()) {
+  UInt64 committedPages, usingPages;
+  if (!getPagesStatus(&committedPages, &usingPages)) {
     _timerSource->setTimeoutMS(kHyperVDynamicMemoryStatusReportIntervalMilliseconds);
     return kIOReturnSuccess;
   }
@@ -180,8 +181,6 @@ IOReturn HyperVBalloon::sendStatusReport(void*, void*, void*) {
   message.header.transactionId = _transactionId;
 
   UInt64 totalPages = getPhysicalMemorySizeInPages();
-  UInt64 committedPages, usingPages;
-  getPagesStatus(&committedPages, &usingPages);
   // We just post two fields below, other fields are not needed by hypervisor
   // Clamp to zero, a wrapped value would make the host balloon out even more memory
   message.statusReport.availablePages = totalPages > usingPages ? totalPages - usingPages : 0;
@@ -199,10 +198,10 @@ IOReturn HyperVBalloon::sendStatusReport(void*, void*, void*) {
   return _hvDevice->writeInbandPacket(&message, sizeof(HyperVDynamicMemoryMessageHeader) + sizeof(HyperVDynamicMemoryMessageStatusReport), false);
 }
 
-void HyperVBalloon::getPagesStatus(UInt64 *committedPages, UInt64 *usingPages) {
+bool HyperVBalloon::getPagesStatus(UInt64 *committedPages, UInt64 *usingPages) {
   //
   // Called from both the status report timer and the VMBus packet handler, so the buffer must be local.
-  // Fields the kernel does not fill, and all fields on failure, stay zero.
+  // Fields the kernel does not fill stay zero.
   //
   mach_msg_type_number_t vmStatSize;
 #if defined(__i386__)
@@ -215,7 +214,9 @@ void HyperVBalloon::getPagesStatus(UInt64 *committedPages, UInt64 *usingPages) {
 #error Unsupported arch
 #endif
   bzero(&vmStat, sizeof(vmStat));
-  HyperVBalloonAccounting::getVMStatistics(&vmStat, &vmStatSize);
+  if (HyperVBalloonAccounting::getVMStatistics(&vmStat, &vmStatSize) != KERN_SUCCESS) {
+    return false;
+  }
 
   // wire_count:            "Wired Memory", pages that cannot be swapped out, e.g. kernel memory
   // internal_page_count:   "App Memory"
@@ -237,6 +238,7 @@ void HyperVBalloon::getPagesStatus(UInt64 *committedPages, UInt64 *usingPages) {
 #endif
     ;
   }
+  return true;
 }
 
 void HyperVBalloon::handleHotAddRequest(HyperVDynamicMemoryMessageHotAddRequest *request) {
@@ -445,25 +447,24 @@ bool HyperVBalloon::inflateBalloon(UInt32 *pageCount) {
 
 void HyperVBalloon::handleBalloonInflationRequest(HyperVDynamicMemoryMessageBalloonInflationRequest *request) {
   UInt32 pageCount = request->pageCount;
-  UInt64 totalPages = getPhysicalMemorySizeInPages();
   UInt64 usedPages;
-  getPagesStatus(nullptr, &usedPages);
-  UInt64 availablePages = totalPages > usedPages ? totalPages - usedPages : 0;
-
-  UInt64 floorPages     = getBalloonFloorPageCount();
+  bool   hasStatus = getPagesStatus(nullptr, &usedPages);
 
   HVDBGLOG("Received request to inflate %u pages", pageCount);
 
-  // Without kernel memory statistics the available memory is unknown
-  if (!HyperVBalloonAccounting::canGetVMStatistics()) {
+  if (!hasStatus) {
+    // Without kernel memory statistics the available memory is unknown
     HVSYSLOG("Kernel memory statistics are unavailable, not inflating");
     pageCount = 0;
-  }
-
-  // Never balloon below the floor
-  if (availablePages < (UInt64) pageCount + floorPages) {
-    HVSYSLOG("Balloon floor reached, filling a part of requested");
-    pageCount = availablePages > floorPages ? (UInt32) (availablePages - floorPages) : 0;
+  } else {
+    // Never balloon below the floor
+    UInt64 totalPages     = getPhysicalMemorySizeInPages();
+    UInt64 availablePages = totalPages > usedPages ? totalPages - usedPages : 0;
+    UInt64 floorPages     = getBalloonFloorPageCount();
+    if (availablePages < (UInt64) pageCount + floorPages) {
+      HVSYSLOG("Balloon floor reached, filling a part of requested");
+      pageCount = availablePages > floorPages ? (UInt32) (availablePages - floorPages) : 0;
+    }
   }
 
   // Try 2 MB chunks again for every request
