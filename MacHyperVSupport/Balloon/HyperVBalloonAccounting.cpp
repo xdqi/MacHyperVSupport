@@ -14,7 +14,7 @@ HyperVBalloonAccounting *HyperVBalloonAccounting::_instance;
 
 //
 // Leading fields of struct machine_info (osfmk/mach/machine.h), which is not part of the SDK.
-// Older kernels have an avail_cpus field before memory_size, max_mem is verified before use.
+// The layout is the same in all kernels from 10.6 on, max_mem is still verified before use.
 //
 typedef struct {
   integer_t major_version;
@@ -25,7 +25,7 @@ typedef struct {
 } HyperVKernelMachineInfo;
 
 //
-// Leading fields of struct vm_locks_array (osfmk/vm/vm_page.h), which holds the page queue lock since 10.8.
+// Leading fields of struct vm_locks_array (osfmk/vm/vm_page.h), which holds the page queue lock since 10.6.
 //
 typedef struct {
   char  pad             __attribute__((aligned(64)));
@@ -80,13 +80,11 @@ void HyperVBalloonAccounting::onLiluPatcherLoad(KernelPatcher &patcher) {
   }
 
   //
-  // vm_page_queue_lock is a macro for a vm_page_locks field since 10.8.
+  // vm_page_queue_lock is a macro for a vm_page_locks field, it is not a symbol of its own.
   //
   HyperVKernelVMLocksArray *vmPageLocks = reinterpret_cast<HyperVKernelVMLocksArray *>(solveSymbol("_vm_page_locks"));
   if (vmPageLocks != nullptr) {
     _vmPageQueueLock = reinterpret_cast<lck_mtx_t *>(&vmPageLocks->vmPageQueueLock);
-  } else {
-    _vmPageQueueLock = reinterpret_cast<lck_mtx_t *>(solveSymbol("_vm_page_queue_lock"));
   }
   _vmPageWireCount = reinterpret_cast<unsigned int *>(solveSymbol("_vm_page_wire_count"));
   _maxMem          = reinterpret_cast<UInt64 *>(solveSymbol("_max_mem"));
